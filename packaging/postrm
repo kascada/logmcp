@@ -1,0 +1,13 @@
+#!/bin/sh
+set -e
+
+case "$1" in
+    purge)
+        rm -rf /etc/logmcp
+        if id logmcp >/dev/null 2>&1; then
+            userdel logmcp || true
+        fi
+        ;;
+esac
+
+systemctl daemon-reload || true

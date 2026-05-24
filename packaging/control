@@ -1,0 +1,10 @@
+Package: logmcp
+Version: @@VERSION@@
+Section: utils
+Priority: optional
+Architecture: @@ARCH@@
+Maintainer: hp <kamran@kleist.de>
+Homepage: https://github.com/kleist-dev/logmcp
+Description: AI Log Access Server
+ LogMCP exposes whitelisted log files to AI clients (Claude Code, VS Code)
+ over HTTPS using the Model Context Protocol (MCP).

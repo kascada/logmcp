@@ -1,0 +1,20 @@
+#!/bin/sh
+set -e
+
+# Create system user if not present.
+if ! id logmcp >/dev/null 2>&1; then
+    useradd --system --no-create-home --shell /usr/sbin/nologin logmcp
+fi
+
+# Grant log-read access via group membership.
+for grp in adm asterisk; do
+    if getent group "$grp" >/dev/null 2>&1; then
+        usermod -aG "$grp" logmcp || true
+    fi
+done
+
+# Secure the config directory.
+chown root:logmcp /etc/logmcp
+chmod 750 /etc/logmcp
+
+systemctl daemon-reload || true

@@ -1,0 +1,9 @@
+#!/bin/sh
+set -e
+
+case "$1" in
+    remove|purge|upgrade)
+        systemctl stop logmcp 2>/dev/null || true
+        systemctl disable logmcp 2>/dev/null || true
+        ;;
+esac

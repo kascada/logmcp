@@ -1,0 +1,18 @@
+# Secrets and local config
+.env
+*.env.*
+
+# Compiled binary
+logmcp
+
+# Debian package
+*.deb
+.deb-staging/
+
+# Go
+*.test
+*.out
+coverage.html
+
+# OS
+.DS_Store

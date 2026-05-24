@@ -1,0 +1,15 @@
+[Unit]
+Description=LogMCP — AI Log Access Server
+Documentation=https://github.com/kleist-dev/logmcp
+After=network.target
+
+[Service]
+ExecStart=/usr/local/bin/logmcp serve
+Restart=on-failure
+RestartSec=5
+User=logmcp
+Group=logmcp
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target
