@@ -200,10 +200,11 @@ func runSetup(cmd *cobra.Command, args []string) error {
 	}
 	_ = exec.Command("chown", "root:logmcp", "/etc/logmcp").Run()
 
-	data, err := yaml.Marshal(cfg)
+	raw, err := yaml.Marshal(cfg)
 	if err != nil {
 		return fmt.Errorf("marshalling config: %w", err)
 	}
+	data := injectWhitelistComments(raw)
 	if err := os.WriteFile(config.DefaultConfigPath, data, 0o640); err != nil {
 		return fmt.Errorf("writing config to %s: %w", config.DefaultConfigPath, err)
 	}
@@ -609,4 +610,39 @@ func printCertFingerprint(certPath string) {
 		parts[i] = fmt.Sprintf("%02X", b)
 	}
 	fmt.Printf("Certificate SHA256 fingerprint:\n  %s\n", strings.Join(parts, ":"))
+}
+
+// injectWhitelistComments appends commented-out example paths after the
+// whitelist entries in a yaml.Marshal output, so users have ready-made
+// templates to uncomment.
+func injectWhitelistComments(data []byte) []byte {
+	lines := strings.Split(string(data), "\n")
+	result := make([]string, 0, len(lines)+6)
+	inWhitelist := false
+
+	for i, line := range lines {
+		result = append(result, line)
+		if line == "    whitelist:" {
+			inWhitelist = true
+			continue
+		}
+		if inWhitelist {
+			if strings.HasPrefix(line, "        -") {
+				// Inject comments after the last whitelist item.
+				next := i + 1
+				if next >= len(lines) || !strings.HasPrefix(lines[next], "        -") {
+					result = append(result,
+						"    # Weitere Pfade freischalten (# entfernen):",
+						"    # - /var/log/nginx/**",
+						"    # - /var/log/asterisk/*",
+						"    # - /tmp/myapp/*.log",
+					)
+					inWhitelist = false
+				}
+			} else {
+				inWhitelist = false
+			}
+		}
+	}
+	return []byte(strings.Join(result, "\n"))
 }

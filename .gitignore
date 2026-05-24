@@ -15,7 +15,7 @@
 coverage.html
 
 # Private — not for public repo
-routines/
+/priv/
 
 # OS
 .DS_Store

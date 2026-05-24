@@ -14,6 +14,7 @@ Absolute path to the log file. Obtain valid paths from `list_logs`.
 ## Response
 
 - `path` — file path
-- `size` — file size in bytes
-- `lines` — total number of lines in the file
-- `modified` — last-modified timestamp (RFC3339)
+- `size_bytes` — file size in bytes
+- `line_count` — total number of lines in the file
+- `last_modified` — last-modified timestamp (RFC3339)
+- `readable` — whether the file is accessible by the server process

@@ -26,6 +26,7 @@ func newClientConfigCmd() *cobra.Command {
 	}
 	ccCmd.AddCommand(newClientConfigSubCmd("claude-code", printClaudeCodeConfig))
 	ccCmd.AddCommand(newClientConfigSubCmd("vscode", printVSCodeConfig))
+	ccCmd.AddCommand(newClientConfigSubCmd("claude-desktop", printClaudeDesktopConfig))
 	return ccCmd
 }
 
@@ -156,6 +157,15 @@ func printVSCodeConfig(cfg *config.Config, url string) {
 	fmt.Println()
 	fmt.Println("# ACHTUNG: Dieses Token ist sensitiv — nicht in öffentliche Repos einchecken")
 	printTLSNote(cfg)
+}
+
+func printClaudeDesktopConfig(cfg *config.Config, url string) {
+	fmt.Println("=== Claude Desktop ===")
+	fmt.Println()
+	fmt.Println("Claude Desktop supports only OAuth-based MCP connections.")
+	fmt.Println("Bearer token authentication as used by logmcp is not supported.")
+	fmt.Println()
+	fmt.Println("Use Claude Code or VS Code to connect to this server.")
 }
 
 func printTLSNote(cfg *config.Config) {

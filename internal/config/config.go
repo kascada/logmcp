@@ -187,6 +187,10 @@ func Load(path string) (*Config, error) {
 		}
 	}
 
+	if len(cfg.Logs.Whitelist) == 0 {
+		cfg.Logs.Whitelist = []string{"/var/log/*"}
+	}
+
 	if err := validate(cfg); err != nil {
 		return nil, fmt.Errorf("invalid config: %w", err)
 	}
@@ -209,9 +213,6 @@ func validate(cfg *Config) error {
 		if len(t.Scopes) == 0 {
 			return fmt.Errorf("auth.tokens[%d] (%s): scopes must not be empty", i, t.Name)
 		}
-	}
-	if len(cfg.Logs.Whitelist) == 0 {
-		return fmt.Errorf("logs.whitelist must contain at least one entry")
 	}
 	switch cfg.Server.TLS.Mode {
 	case "self-signed", "custom", "off":

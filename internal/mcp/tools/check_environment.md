@@ -12,4 +12,4 @@ Array of check result objects, each with:
 
 - `name` — check identifier (e.g. `config`, `tls`, `whitelist`, `syslog`, `mysql`)
 - `ok` — true if the check passed, false if it failed
-- `message` — human-readable description of the result or error
+- `detail` — human-readable description of the result or error (omitted when empty)

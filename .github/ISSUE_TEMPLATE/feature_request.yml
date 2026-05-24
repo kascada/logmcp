@@ -1,0 +1,27 @@
+name: Feature Request
+description: Suggest an improvement or new capability
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: usecase
+    attributes:
+      label: What problem does this solve?
+      description: Describe the situation where you hit a limitation. The use case matters more than the proposed solution.
+    validations:
+      required: true
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed solution
+      description: How would you expect it to work? CLI flags, config keys, new commands?
+    validations:
+      required: false
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives you have considered
+      description: Workarounds, related tools, or other approaches you looked at.
+    validations:
+      required: false

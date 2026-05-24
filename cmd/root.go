@@ -25,6 +25,7 @@ func Execute() error {
 func init() {
 	rootCmd.AddCommand(newServeCmd())
 	rootCmd.AddCommand(newSetupCmd())
+	rootCmd.AddCommand(newQuickstartCmd())
 	rootCmd.AddCommand(newCheckCmd())
 	rootCmd.AddCommand(newServiceCmd())
 	rootCmd.AddCommand(newClientConfigCmd())

@@ -11,5 +11,7 @@ Call this first to discover which log files are available before calling `read_l
 Array of objects, each with:
 
 - `path` — absolute path on the server
-- `size` — file size in bytes
-- `modified` — last-modified timestamp (RFC3339)
+- `size_bytes` — file size in bytes
+- `last_modified` — last-modified timestamp (RFC3339)
+- `line_count` — total number of lines
+- `readable` — whether the file is accessible by the server process

@@ -1,0 +1,74 @@
+name: Bug Report
+description: Something is not working as expected
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Before reporting, run `logmcp check` — it catches most configuration issues.
+
+  - type: input
+    id: version
+    attributes:
+      label: LogMCP version
+      placeholder: "e.g. 0.1.0  (logmcp --version)"
+    validations:
+      required: true
+
+  - type: input
+    id: os
+    attributes:
+      label: OS / Distribution
+      placeholder: "e.g. Debian 12, Ubuntu 24.04"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: deployment
+    attributes:
+      label: Deployment mode
+      options:
+        - Behind Caddy reverse proxy
+        - Direct TLS (self-signed)
+        - Direct TLS (custom cert)
+        - No TLS (other reverse proxy)
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened?
+      description: What did you expect, and what happened instead?
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. ...
+        2. ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: check
+    attributes:
+      label: Output of `logmcp check`
+      render: shell
+
+  - type: textarea
+    id: config
+    attributes:
+      label: Relevant config (`/etc/logmcp/config.yaml`)
+      description: Redact tokens before pasting.
+      render: yaml
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant log output
+      description: "`journalctl -u logmcp` or `grep logmcp /var/log/syslog`"
+      render: shell

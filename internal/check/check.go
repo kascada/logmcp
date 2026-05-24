@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -108,6 +109,14 @@ func Run(cfg *config.Config, opts Options) Result {
 		add(fmt.Sprintf("Port %d reachable", cfg.Server.Port), reachable, detail)
 	}
 
+	// systemd service status (skipped if systemctl is not available).
+	for _, item := range checkSystemdService("logmcp") {
+		if !item.OK {
+			r.OK = false
+		}
+		r.Checks = append(r.Checks, item)
+	}
+
 	// Syslog reachable.
 	add("Syslog reachable", checkSyslog(), "")
 
@@ -169,6 +178,30 @@ func checkSyslog() bool {
 		return true
 	}
 	return false
+}
+
+// checkSystemdService returns active/enabled items for a systemd unit.
+// Returns nil if systemctl is not available (non-systemd systems are silently skipped).
+func checkSystemdService(name string) []Item {
+	if _, err := exec.LookPath("systemctl"); err != nil {
+		return nil
+	}
+	activeOut, _ := exec.Command("systemctl", "is-active", name).Output()
+	activeState := strings.TrimSpace(string(activeOut))
+	if activeState == "" {
+		activeState = "unknown"
+	}
+
+	enabledOut, _ := exec.Command("systemctl", "is-enabled", name).Output()
+	enabledState := strings.TrimSpace(string(enabledOut))
+	if enabledState == "" {
+		enabledState = "unknown"
+	}
+
+	return []Item{
+		{Name: fmt.Sprintf("systemd %s active", name), OK: activeState == "active", Detail: activeState},
+		{Name: fmt.Sprintf("systemd %s enabled", name), OK: enabledState == "enabled", Detail: enabledState},
+	}
 }
 
 // mysqlAddr extracts a "host:port" address from a Go sql-driver DSN.
