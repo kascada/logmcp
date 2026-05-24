@@ -14,5 +14,8 @@ logmcp
 *.out
 coverage.html
 
+# Private — not for public repo
+routines/
+
 # OS
 .DS_Store
