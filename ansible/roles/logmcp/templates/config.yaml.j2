@@ -1,0 +1,29 @@
+name: "{{ logmcp_name | default('logmcp-' + inventory_hostname) }}"
+
+server:
+  host: "127.0.0.1"
+  port: {{ logmcp_port | default(7788) }}
+  tls:
+    mode: "off"
+
+proxy:
+  enabled: {{ logmcp_proxy_enabled | default(true) | lower }}
+  trusted_proxy: true
+  domain: "{{ logmcp_proxy_domain }}"
+  path_prefix: "{{ logmcp_path_prefix | default('/logmcp') }}"
+  caddy: true
+
+auth:
+  tokens:
+    - name: "{{ logmcp_token_name | default('default') }}"
+      token: "{{ logmcp_token }}"
+      scopes: ["read"]
+
+logs:
+  whitelist:
+{% for path in logmcp_whitelist | default(['/var/log/*']) %}
+    - "{{ path }}"
+{% endfor %}
+
+audit:
+  syslog: true

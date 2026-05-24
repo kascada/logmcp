@@ -1,0 +1,5 @@
+---
+- name: restart logmcp
+  ansible.builtin.systemd:
+    name: logmcp
+    state: restarted

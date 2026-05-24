@@ -1,0 +1,9 @@
+---
+logmcp_version: "0.1.0"
+
+logmcp_port: 7788
+logmcp_path_prefix: "/logmcp"
+logmcp_proxy_enabled: true
+logmcp_token_name: "default"
+logmcp_whitelist:
+  - "/var/log/*"
