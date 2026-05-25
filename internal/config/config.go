@@ -17,6 +17,7 @@ type Config struct {
 	Auth       AuthConfig       `yaml:"auth"`
 	Logs       LogsConfig       `yaml:"logs"`
 	Audit      AuditConfig      `yaml:"audit"`
+	Security   SecurityConfig   `yaml:"security"`
 	Tools      ToolsConfig      `yaml:"tools,omitempty"`
 	Extensions ExtensionsConfig `yaml:"extensions"`
 }
@@ -88,15 +89,52 @@ type AuditConfig struct {
 	Syslog bool `yaml:"syslog"`
 }
 
+// SecurityConfig holds rate limiting and fail2ban integration settings.
+type SecurityConfig struct {
+	RateLimit *TwoTierRateLimitConfig `yaml:"rate_limit,omitempty"`
+	Fail2ban  Fail2banConfig          `yaml:"fail2ban"`
+}
+
+// TwoTierRateLimitConfig holds independent burst and sustained rate limit tiers.
+// When nil (omitted from config), rate limiting is disabled.
+// Each tier is individually optional — omit a sub-block to disable that tier.
+type TwoTierRateLimitConfig struct {
+	Burst     *RateLimitTierConfig `yaml:"burst,omitempty"`
+	Sustained *RateLimitTierConfig `yaml:"sustained,omitempty"`
+}
+
+// RateLimitTierConfig limits failed authentication attempts per source IP
+// within a sliding window.
+type RateLimitTierConfig struct {
+	MaxFailures   int `yaml:"max_failures"`
+	WindowSeconds int `yaml:"window_seconds"`
+}
+
+// Fail2banConfig controls the fail2ban filter/jail installation.
+type Fail2banConfig struct {
+	Enabled   bool   `yaml:"enabled"`
+	FilterDir string `yaml:"filter_dir,omitempty"`
+	JailDir   string `yaml:"jail_dir,omitempty"`
+}
+
 // ToolsConfig controls which MCP tools are exposed.
 type ToolsConfig struct {
 	Disabled []string `yaml:"disabled,omitempty"`
+}
+
+// MacroConfig holds configuration for the macro engine.
+type MacroConfig struct {
+	// Dir is the directory that is scanned for *.yaml macro files at startup.
+	// Relative paths are resolved relative to the working directory.
+	// An empty string disables macro loading.
+	Dir string `yaml:"dir"`
 }
 
 // ExtensionsConfig holds optional extension settings.
 type ExtensionsConfig struct {
 	Switchboard SwitchboardConfig `yaml:"switchboard"`
 	Databases   DatabasesConfig   `yaml:"databases"`
+	Macros      MacroConfig       `yaml:"macros"`
 }
 
 // SwitchboardConfig is the (currently disabled) switchboard extension.
@@ -148,6 +186,11 @@ func Default() *Config {
 		Audit: AuditConfig{
 			Syslog: true,
 		},
+		Security: SecurityConfig{
+			Fail2ban: Fail2banConfig{
+				Enabled: true,
+			},
+		},
 		Extensions: ExtensionsConfig{
 			Switchboard: SwitchboardConfig{
 				Enabled: false,
@@ -170,6 +213,9 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("reading config file %q: %w", path, err)
 	}
 
+	// ExpandEnv allows $VAR references in the config (e.g. tokens from env).
+	// Side effect: any $WORD in comments or string values is also expanded;
+	// use $$ to write a literal dollar sign.
 	expanded := os.ExpandEnv(string(data))
 
 	cfg := Default()
@@ -181,6 +227,7 @@ func Load(path string) (*Config, error) {
 	if len(cfg.Auth.Tokens) == 0 {
 		var legacy legacyAuth
 		if err := yaml.Unmarshal([]byte(expanded), &legacy); err == nil && legacy.Auth.Token != "" {
+			fmt.Fprintf(os.Stderr, "logmcp: deprecated config format: 'auth.token' should be migrated to 'auth.tokens' list\n")
 			cfg.Auth.Tokens = []TokenConfig{
 				{Name: "default", Token: legacy.Auth.Token, Scopes: []string{"read"}},
 			}

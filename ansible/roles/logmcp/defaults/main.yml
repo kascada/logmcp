@@ -7,3 +7,7 @@ logmcp_proxy_enabled: true
 logmcp_token_name: "default"
 logmcp_whitelist:
   - "/var/log/*"
+
+logmcp_fail2ban_enabled: true
+# logmcp_rate_limit_max_failures: 10
+# logmcp_rate_limit_window_seconds: 60

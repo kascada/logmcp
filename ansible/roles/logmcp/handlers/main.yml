@@ -3,3 +3,9 @@
   ansible.builtin.systemd:
     name: logmcp
     state: restarted
+
+- name: reload fail2ban
+  ansible.builtin.command:
+    cmd: fail2ban-client reload
+  ignore_errors: true
+  changed_when: false

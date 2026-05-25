@@ -96,7 +96,7 @@ func LoadTLSConfig(certPath, keyPath string) (*tls.Config, error) {
 
 	cfg := &tls.Config{
 		Certificates: []tls.Certificate{cert},
-		MinVersion:   tls.VersionTLS12,
+		MinVersion:   tls.VersionTLS13,
 	}
 	return cfg, nil
 }

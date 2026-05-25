@@ -32,6 +32,11 @@ func logLine(line string) error {
 	return err
 }
 
+// LogAuthFailed records a failed authentication attempt.
+func LogAuthFailed(clientIP, reason string) error {
+	return logLine(fmt.Sprintf("auth_failed client=%s reason=%s", clientIP, reason))
+}
+
 // Log records a successful tool access.
 func Log(tool, path, clientIP string) error {
 	return logLine(fmt.Sprintf("access tool=%s path=%s client=%s", tool, path, clientIP))

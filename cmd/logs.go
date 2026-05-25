@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -109,7 +110,7 @@ func newLogsReadCmd() *cobra.Command {
 				opts.Until = &t
 			}
 
-			result, err := mgr.ReadFile(path, opts)
+			result, err := mgr.ReadFile(context.Background(), path, opts)
 			if err != nil {
 				return fmt.Errorf("reading file: %w", err)
 			}
@@ -177,7 +178,7 @@ func newLogsSearchCmd() *cobra.Command {
 				opts.Until = &t
 			}
 
-			matches, err := mgr.SearchFile(path, opts)
+			matches, err := mgr.SearchFile(context.Background(), path, opts)
 			if err != nil {
 				return fmt.Errorf("searching file: %w", err)
 			}

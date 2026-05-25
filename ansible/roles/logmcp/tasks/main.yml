@@ -24,3 +24,10 @@
     name: logmcp
     enabled: true
     state: started
+
+- name: Install fail2ban config for logmcp
+  ansible.builtin.command:
+    cmd: logmcp security install-fail2ban
+  when: logmcp_fail2ban_enabled | default(true)
+  changed_when: true
+  notify: reload fail2ban

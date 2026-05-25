@@ -9,11 +9,14 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/chzyer/readline"
 	"github.com/google/uuid"
 	"github.com/kleist-dev/logmcp/internal/config"
+	"github.com/kleist-dev/logmcp/internal/security"
 	internaltls "github.com/kleist-dev/logmcp/internal/tls"
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
@@ -68,7 +71,10 @@ func runSetup(cmd *cobra.Command, args []string) error {
 	fmt.Println()
 
 	// --- Step 0: System user ---
-	setupSystemUser(rl)
+	logmcpExists, err := setupSystemUser(rl)
+	if err != nil {
+		return err
+	}
 
 	// --- Step 1: Deployment mode ---
 	fmt.Println("Deployment mode:")
@@ -198,17 +204,15 @@ func runSetup(cmd *cobra.Command, args []string) error {
 	if err := os.MkdirAll("/etc/logmcp", 0o750); err != nil {
 		return fmt.Errorf("creating /etc/logmcp: %w", err)
 	}
-	_ = exec.Command("chown", "root:logmcp", "/etc/logmcp").Run()
 
 	raw, err := yaml.Marshal(cfg)
 	if err != nil {
 		return fmt.Errorf("marshalling config: %w", err)
 	}
-	data := injectWhitelistComments(raw)
+	data := injectSecurityComments(injectWhitelistComments(raw))
 	if err := os.WriteFile(config.DefaultConfigPath, data, 0o640); err != nil {
 		return fmt.Errorf("writing config to %s: %w", config.DefaultConfigPath, err)
 	}
-	_ = exec.Command("chown", "root:logmcp", config.DefaultConfigPath).Run()
 	fmt.Printf("Config written to %s\n", config.DefaultConfigPath)
 
 	// --- Generate self-signed cert if needed ---
@@ -223,11 +227,15 @@ func runSetup(cmd *cobra.Command, args []string) error {
 		}
 	}
 
+	if err := fixPermissions(logmcpExists); err != nil {
+		return err
+	}
+
 	// --- Caddy snippet ---
 	if behindProxy && cfg.Proxy.Caddy {
 		fmt.Println()
 		caddyfile := "/etc/caddy/Caddyfile"
-		if caddyContainsLogmcp(caddyfile, cfg.Proxy.Domain) {
+		if caddyContainsLogmcp(caddyfile, cfg.Proxy.Domain, cfg.Server.Port) {
 			fmt.Printf("✓ Caddy-Konfiguration für '%s' ist bereits in %s eingetragen.\n", cfg.Proxy.Domain, caddyfile)
 		} else {
 			fmt.Println("=== Caddyfile snippet ===")
@@ -240,9 +248,13 @@ func runSetup(cmd *cobra.Command, args []string) error {
 	fmt.Println()
 	setupSystemd(rl)
 
-	// --- Step 8: Claude Code MCP registration ---
+	// --- Step 8: fail2ban ---
 	fmt.Println()
-	setupClaudeCodeMCP(rl, cfg)
+	setupFail2ban(rl, cfg)
+
+	// --- Step 9: Claude Code MCP registration ---
+	fmt.Println()
+	setupClaudeCodeMCP(cfg)
 
 	fmt.Println()
 	fmt.Println("=== Setup complete ===")
@@ -254,7 +266,9 @@ func runSetup(cmd *cobra.Command, args []string) error {
 
 // setupSystemUser interactively creates the logmcp system user and optionally
 // adds it to relevant groups for log file access.
-func setupSystemUser(rl *readline.Instance) {
+// Returns (true, nil) if the logmcp user/group exists (already or just created),
+// (false, nil) if the user declined to create it, or (false, error) if useradd failed.
+func setupSystemUser(rl *readline.Instance) (bool, error) {
 	userExists := exec.Command("id", "logmcp").Run() == nil
 
 	if userExists {
@@ -263,11 +277,10 @@ func setupSystemUser(rl *readline.Instance) {
 		fmt.Println("Dienst-User: logmcp läuft empfohlenerweise als eigener System-User (nicht root).")
 		if promptYN(rl, "System-User 'logmcp' anlegen?", true) {
 			if err := exec.Command("useradd", "--system", "--no-create-home", "--shell", "/usr/sbin/nologin", "logmcp").Run(); err != nil {
-				fmt.Fprintf(os.Stderr, "  Warnung: useradd fehlgeschlagen: %v\n", err)
-			} else {
-				fmt.Println("✓ User 'logmcp' angelegt.")
-				userExists = true
+				return false, fmt.Errorf("useradd fehlgeschlagen: %w", err)
 			}
+			fmt.Println("✓ User 'logmcp' angelegt.")
+			userExists = true
 		} else {
 			fmt.Println("  User nicht angelegt — Dienst läuft als der User, der 'logmcp serve' startet.")
 		}
@@ -275,7 +288,7 @@ func setupSystemUser(rl *readline.Instance) {
 
 	if !userExists {
 		fmt.Println()
-		return
+		return false, nil
 	}
 
 	// Offer to add logmcp to relevant groups.
@@ -327,24 +340,59 @@ func setupSystemUser(rl *readline.Instance) {
 	}
 
 	fmt.Println()
+	return true, nil
+}
+
+// fixPermissions sets ownership and permissions on /etc/logmcp/ and all
+// regular files within it. chmod is always applied; chown root:logmcp is only
+// applied when logmcpExists is true.
+func fixPermissions(logmcpExists bool) error {
+	const dir = "/etc/logmcp"
+
+	if err := os.Chmod(dir, 0o750); err != nil {
+		return fmt.Errorf("chmod %s: %w", dir, err)
+	}
+	if logmcpExists {
+		if err := exec.Command("chown", "root:logmcp", dir).Run(); err != nil {
+			return fmt.Errorf("chown root:logmcp %s: %w", dir, err)
+		}
+	}
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return fmt.Errorf("reading %s: %w", dir, err)
+	}
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		path := filepath.Join(dir, e.Name())
+		if err := os.Chmod(path, 0o640); err != nil {
+			return fmt.Errorf("chmod %s: %w", path, err)
+		}
+		if logmcpExists {
+			if err := exec.Command("chown", "root:logmcp", path).Run(); err != nil {
+				return fmt.Errorf("chown root:logmcp %s: %w", path, err)
+			}
+		}
+	}
+	return nil
 }
 
 // caddyContainsLogmcp checks if the Caddyfile already mentions the domain
-// and a logmcp-related entry (port 7788 or the path /logmcp).
-func caddyContainsLogmcp(caddyfile, domain string) bool {
+// and a logmcp-related entry (configured port or the path /logmcp).
+func caddyContainsLogmcp(caddyfile, domain string, port int) bool {
 	data, err := os.ReadFile(caddyfile)
 	if err != nil {
 		return false
 	}
 	content := string(data)
 	return strings.Contains(content, domain) &&
-		(strings.Contains(content, "7788") || strings.Contains(content, "/logmcp"))
+		(strings.Contains(content, strconv.Itoa(port)) || strings.Contains(content, "/logmcp"))
 }
 
-// setupClaudeCodeMCP offers to register the server with Claude Code via
-// `claude mcp add`. This uses the local-server mechanism which works without
-// the user:mcp_servers OAuth scope (unlike mcpServers in settings.json).
-func setupClaudeCodeMCP(rl *readline.Instance, cfg *config.Config) {
+// setupClaudeCodeMCP prints the claude mcp add command for the client machine.
+func setupClaudeCodeMCP(cfg *config.Config) {
 	defaultToken := cfg.Auth.Default()
 	if defaultToken == nil {
 		return
@@ -363,43 +411,15 @@ func setupClaudeCodeMCP(rl *readline.Instance, cfg *config.Config) {
 		mcpURL = fmt.Sprintf("%s://%s:%d/mcp", scheme, cfg.Server.Host, cfg.Server.Port)
 	}
 
-	fmt.Println("Claude Code MCP-Registrierung:")
-	fmt.Printf("  URL: %s\n", mcpURL)
-	fmt.Println()
-	fmt.Println("Hinweis: MCP-Server in ~/.claude/settings.json erfordern den Scope")
-	fmt.Println("  'user:mcp_servers'. Die empfohlene Alternative ist 'claude mcp add'")
-	fmt.Println("  oder der Befehl /mcp in Claude Code.")
-	fmt.Println()
-
 	name := cfg.Name
 	if name == "" {
 		name = "logmcp"
 	}
 
-	if !promptYN(rl, "Server jetzt per 'claude mcp add' registrieren?", true) {
-		fmt.Println("Manuell registrieren mit:")
-		fmt.Printf("  claude mcp add --transport http %s %s \\\n", name, mcpURL)
-		fmt.Printf("    --header \"Authorization: Bearer %s\"\n", defaultToken.Token)
-		fmt.Println("Oder: /mcp in Claude Code öffnen und dort eintragen.")
-		fmt.Println()
-		fmt.Println("Zum Entfernen:")
-		fmt.Printf("  claude mcp remove %s\n", name)
-		return
-	}
-
-	cmd := exec.Command("claude", "mcp", "add", "--transport", "http", name, mcpURL,
-		"--header", fmt.Sprintf("Authorization: Bearer %s", defaultToken.Token))
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
-		fmt.Fprintf(os.Stderr, "Warnung: 'claude mcp add' fehlgeschlagen: %v\n", err)
-		fmt.Println("Manuell ausführen:")
-		fmt.Printf("  claude mcp add --transport http %s %s \\\n", name, mcpURL)
-		fmt.Printf("    --header \"Authorization: Bearer %s\"\n", defaultToken.Token)
-	} else {
-		fmt.Println("✓ Server in Claude Code registriert.")
-		fmt.Println("  Claude Code neu starten, damit die Änderung wirksam wird.")
-	}
+	fmt.Println("Claude Code — Server auf dem Client-Rechner registrieren:")
+	fmt.Println()
+	fmt.Printf("  claude mcp add --transport http %s %s \\\n", name, mcpURL)
+	fmt.Printf("    --header \"Authorization: Bearer %s\"\n", defaultToken.Token)
 	fmt.Println()
 	fmt.Println("Zum Entfernen:")
 	fmt.Printf("  claude mcp remove %s\n", name)
@@ -610,6 +630,57 @@ func printCertFingerprint(certPath string) {
 		parts[i] = fmt.Sprintf("%02X", b)
 	}
 	fmt.Printf("Certificate SHA256 fingerprint:\n  %s\n", strings.Join(parts, ":"))
+}
+
+// setupFail2ban offers to install the fail2ban filter and jail configs.
+func setupFail2ban(rl *readline.Instance, cfg *config.Config) {
+	if !cfg.Security.Fail2ban.Enabled {
+		fmt.Println("fail2ban-Integration: in der Config deaktiviert (security.fail2ban.enabled: false).")
+		return
+	}
+	if !security.Available() {
+		fmt.Println("fail2ban nicht gefunden — Filter-Dateien können später installiert werden:")
+		fmt.Println("  sudo logmcp security install-fail2ban --reload")
+		return
+	}
+	if !promptYN(rl, "fail2ban-Filter und Jail für logmcp installieren?", true) {
+		fmt.Println("Später installieren mit: sudo logmcp security install-fail2ban --reload")
+		return
+	}
+	if err := security.InstallFail2ban(cfg.Security.Fail2ban.FilterDir, cfg.Security.Fail2ban.JailDir); err != nil {
+		fmt.Fprintf(os.Stderr, "Warnung: fail2ban-Konfiguration: %v\n", err)
+		return
+	}
+	if err := security.ReloadFail2ban(); err != nil {
+		fmt.Fprintf(os.Stderr, "Warnung: fail2ban-client reload: %v\n", err)
+	} else {
+		fmt.Println("✓ fail2ban konfiguriert und neu geladen.")
+	}
+}
+
+// injectSecurityComments adds a commented-out rate_limit example block inside
+// the security section of the marshalled YAML.
+func injectSecurityComments(data []byte) []byte {
+	lines := strings.Split(string(data), "\n")
+	result := make([]string, 0, len(lines)+10)
+	for _, line := range lines {
+		result = append(result, line)
+		if line == "security:" {
+			result = append(result,
+				"  # Rate-Limiting für Auth-Fehler (auskommentiert = deaktiviert):",
+				"  # Beide Stufen sind unabhängig optional — einzelne Stufe weglassen = deaktiviert.",
+				"  # Burst-Threshold höher ansetzen: MCP-Einrichtung kostet erfahrungsgemäß einige Fehlversuche.",
+				"  # rate_limit:",
+				"  #   burst:",
+				"  #     max_failures: 20      # schnelle Burst-Bremse",
+				"  #     window_seconds: 30",
+				"  #   sustained:",
+				"  #     max_failures: 50      # langsame Dauersperre",
+				"  #     window_seconds: 600   # 10 Minuten",
+			)
+		}
+	}
+	return []byte(strings.Join(result, "\n"))
 }
 
 // injectWhitelistComments appends commented-out example paths after the

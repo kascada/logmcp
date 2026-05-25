@@ -64,6 +64,18 @@ var knownOptionalSections = []struct {
 			{"port:", "#   port: 7788              # Port"},
 		},
 	},
+	{
+		sectionKey: "security:",
+		params: []struct {
+			key  string
+			line string
+		}{
+			{
+				"burst:",
+				"#   rate_limit:\n#     burst:               # schnelle Burst-Bremse\n#       max_failures: 20  # höherer Threshold (MCP-Einrichtung kostet Versuche)\n#       window_seconds: 30\n#     sustained:           # langsame Dauersperre\n#       max_failures: 50\n#       window_seconds: 600  # 10 Minuten",
+			},
+		},
+	},
 }
 
 // BackfillComments reads the config file at path and appends any known optional

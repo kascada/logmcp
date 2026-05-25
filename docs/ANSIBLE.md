@@ -31,6 +31,11 @@ ansible/roles/logmcp/
 | `logmcp_proxy_enabled` | No | `true` | Enable reverse proxy mode |
 | `logmcp_token_name` | No | `default` | Display name for the token |
 | `logmcp_whitelist` | No | `["/var/log/*"]` | Glob patterns for accessible log files |
+| `logmcp_fail2ban_enabled` | No | `true` | Install fail2ban filter/jail for logmcp |
+| `logmcp_rate_limit_burst_max_failures` | No | — (disabled) | Max failures in burst window before 429 |
+| `logmcp_rate_limit_burst_window_seconds` | No | `30` | Burst sliding window in seconds |
+| `logmcp_rate_limit_sustained_max_failures` | No | — (disabled) | Max failures in sustained window before 429 |
+| `logmcp_rate_limit_sustained_window_seconds` | No | `600` | Sustained sliding window in seconds |
 
 Store `logmcp_token` in Ansible Vault:
 
@@ -57,8 +62,31 @@ ansible-vault encrypt_string 'your-token-here' --name logmcp_token
 2. Installs via `apt` — this runs `postinst`, which creates the `logmcp` system user, sets up group memberships and directory permissions, and runs `systemctl daemon-reload`
 3. Writes `/etc/logmcp/config.yaml` from the template
 4. Enables and starts the `logmcp` systemd service
+5. Runs `logmcp security install-fail2ban` if `logmcp_fail2ban_enabled: true` (default), then reloads fail2ban
 
 The service is only started after the config is in place — `logmcp serve` exits immediately without a config file.
+
+### fail2ban
+
+The role installs logmcp's embedded fail2ban filter and jail configs via `logmcp security install-fail2ban`. This works whether fail2ban is already running or not — the files are written and `fail2ban-client reload` picks them up additively. Existing bans and jails are not affected.
+
+To disable: set `logmcp_fail2ban_enabled: false`.
+
+### Rate Limiting
+
+Two-tier in-process rate limiting. Enable either or both tiers by defining the respective variables:
+
+```yaml
+# Burst tier — quick response to short attack bursts
+logmcp_rate_limit_burst_max_failures: 20
+logmcp_rate_limit_burst_window_seconds: 30
+
+# Sustained tier — long-window lock for persistent attempts
+logmcp_rate_limit_sustained_max_failures: 50
+logmcp_rate_limit_sustained_window_seconds: 600
+```
+
+Without these variables, rate limiting is disabled (fail2ban alone handles brute force).
 
 ## Releases
 

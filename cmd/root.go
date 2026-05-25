@@ -1,8 +1,11 @@
 package cmd
 
 import (
+	"embed"
 	"fmt"
 	"os"
+	"os/signal"
+	"syscall"
 
 	"github.com/kleist-dev/logmcp/internal/config"
 	"github.com/kleist-dev/logmcp/internal/logs"
@@ -18,12 +21,12 @@ over HTTPS + Bearer Token using the Model Context Protocol (MCP).`,
 }
 
 // Execute runs the root command.
-func Execute() error {
+func Execute(docsFS embed.FS) error {
+	rootCmd.AddCommand(newServeCmd(docsFS))
 	return rootCmd.Execute()
 }
 
 func init() {
-	rootCmd.AddCommand(newServeCmd())
 	rootCmd.AddCommand(newSetupCmd())
 	rootCmd.AddCommand(newQuickstartCmd())
 	rootCmd.AddCommand(newCheckCmd())
@@ -31,20 +34,21 @@ func init() {
 	rootCmd.AddCommand(newClientConfigCmd())
 	rootCmd.AddCommand(newLogsCmd())
 	rootCmd.AddCommand(newTokenCmd())
+	rootCmd.AddCommand(newSecurityCmd())
 }
 
 // newServeCmd returns the explicit `serve` subcommand.
-func newServeCmd() *cobra.Command {
+func newServeCmd(docsFS embed.FS) *cobra.Command {
 	return &cobra.Command{
 		Use:   "serve",
 		Short: "Start the LogMCP MCP server",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return serve()
+			return serve(docsFS)
 		},
 	}
 }
 
-func serve() error {
+func serve(docsFS embed.FS) error {
 	if _, err := os.Stat(config.DefaultConfigPath); os.IsNotExist(err) {
 		fmt.Fprintf(os.Stderr,
 			"Config file not found at %s.\nRun 'logmcp setup' to create it.\n",
@@ -62,10 +66,20 @@ func serve() error {
 
 	logMgr := logs.NewManager(cfg.Logs.Whitelist, cfg.Logs.Blacklist, cfg.Logs.Journald)
 
-	srv, err := internalmcp.New(cfg, logMgr)
+	srv, err := internalmcp.New(cfg, logMgr, docsFS)
 	if err != nil {
 		return fmt.Errorf("creating MCP server: %w", err)
 	}
+
+	go func() {
+		ch := make(chan os.Signal, 1)
+		signal.Notify(ch, syscall.SIGHUP)
+		for range ch {
+			if err := srv.Reload(config.DefaultConfigPath); err != nil {
+				fmt.Fprintf(os.Stderr, "logmcp: reload failed: %v\n", err)
+			}
+		}
+	}()
 
 	return srv.Start()
 }

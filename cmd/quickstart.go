@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"embed"
 	"fmt"
 	"os"
 	"os/exec"
@@ -115,6 +116,16 @@ func runQuickstart(port int, tokenFlag, userFlag string) error {
 	}
 	cfg.Logs.Whitelist = []string{"/var/log/*"}
 	cfg.Logs.Journald = true
+	cfg.Security.RateLimit = &config.TwoTierRateLimitConfig{
+		Burst: &config.RateLimitTierConfig{
+			MaxFailures:   20,
+			WindowSeconds: 30,
+		},
+		Sustained: &config.RateLimitTierConfig{
+			MaxFailures:   50,
+			WindowSeconds: 600,
+		},
+	}
 
 	// --- TLS cert in temp dir (ephemeral) ---
 	tmpDir, err := os.MkdirTemp("", "logmcp-qs-*")
@@ -158,7 +169,7 @@ func runQuickstart(port int, tokenFlag, userFlag string) error {
 
 	// --- Start server ---
 	logMgr := logs.NewManager(cfg.Logs.Whitelist, cfg.Logs.Blacklist, cfg.Logs.Journald)
-	srv, err := internalmcp.New(cfg, logMgr)
+	srv, err := internalmcp.New(cfg, logMgr, embed.FS{})
 	if err != nil {
 		return fmt.Errorf("creating MCP server: %w", err)
 	}

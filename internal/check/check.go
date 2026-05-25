@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -82,21 +83,32 @@ func Run(cfg *config.Config, opts Options) Result {
 			add(fmt.Sprintf("glob %q", pattern), false, "no files matched")
 			continue
 		}
-		allReadable := true
+		readable := 0
 		for _, m := range matches {
 			f, err := os.Open(m)
-			if err != nil {
-				allReadable = false
-				break
+			if err == nil {
+				f.Close()
+				readable++
 			}
-			f.Close()
 		}
-		add(fmt.Sprintf("glob %q (%d files)", pattern, len(matches)), allReadable, "")
+		isWildcard := strings.ContainsAny(pattern, "*?[")
+		var ok bool
+		var detail string
+		if isWildcard {
+			// For wildcard patterns some files (e.g. binary btmp, root-only logs) may
+			// not be readable; the server skips them at runtime. Pass if at least one
+			// file is accessible.
+			ok = readable > 0
+			detail = fmt.Sprintf("%d/%d readable", readable, len(matches))
+		} else {
+			ok = readable == len(matches)
+		}
+		add(fmt.Sprintf("glob %q (%d files)", pattern, len(matches)), ok, detail)
 	}
 
 	// Port reachable (service is running and accepting connections).
 	if opts.IncludePort {
-		addr := fmt.Sprintf("%s:%d", cfg.Server.Host, cfg.Server.Port)
+		addr := net.JoinHostPort(cfg.Server.Host, strconv.Itoa(cfg.Server.Port))
 		conn, err := net.DialTimeout("tcp", addr, 3*time.Second)
 		reachable := err == nil
 		if reachable {

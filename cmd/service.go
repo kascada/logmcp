@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	_ "embed"
 	"fmt"
 	"os"
 	"os/exec"
@@ -12,22 +13,8 @@ import (
 
 const systemdUnitPath = "/etc/systemd/system/logmcp.service"
 
-const systemdUnitContent = `[Unit]
-Description=LogMCP — AI Log Access Server
-Documentation=https://github.com/kleist-dev/logmcp
-After=network.target
-
-[Service]
-ExecStart=/usr/local/bin/logmcp serve
-Restart=on-failure
-RestartSec=5
-User=logmcp
-Group=logmcp
-NoNewPrivileges=true
-
-[Install]
-WantedBy=multi-user.target
-`
+//go:embed assets/logmcp.service
+var systemdUnitContent string
 
 func newServiceCmd() *cobra.Command {
 	svcCmd := &cobra.Command{
@@ -70,8 +57,15 @@ func runServiceInstall(cmd *cobra.Command, args []string) error {
 
 	run("systemctl", "daemon-reload")
 	run("systemctl", "enable", "logmcp")
-	run("systemctl", "start", "logmcp")
-	fmt.Println("Service enabled and started.")
+	startOut, startErr := exec.Command("systemctl", "start", "logmcp").CombinedOutput()
+	if len(startOut) > 0 {
+		fmt.Print(string(startOut))
+	}
+	if startErr != nil {
+		fmt.Fprintln(os.Stderr, "Warning: service failed to start. Check: journalctl -u logmcp -n 50")
+	} else {
+		fmt.Println("Service enabled and started.")
+	}
 	return nil
 }
 

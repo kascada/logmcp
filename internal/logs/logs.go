@@ -2,6 +2,7 @@ package logs
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -9,8 +10,17 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
+
+	"github.com/bmatcuk/doublestar/v4"
 )
+
+// scannerBufSize is the bufio.Scanner buffer size used for all log file reads.
+const scannerBufSize = 1024 * 1024
+
+// listCacheTTL is the duration for which ListAccessible() results are cached.
+const listCacheTTL = 30 * time.Second
 
 // JournaldPrefix is the virtual path prefix for the systemd journal source.
 const JournaldPrefix = "journald://"
@@ -63,9 +73,12 @@ type Match struct {
 
 // Manager controls access to log files using whitelist/blacklist glob patterns.
 type Manager struct {
-	whitelist []string
-	blacklist []string
-	journald  bool
+	mu          sync.RWMutex
+	whitelist   []string
+	blacklist   []string
+	journald    bool
+	cachedFiles []FileInfo
+	cacheTime   time.Time
 }
 
 // NewManager creates a Manager with the given whitelist and blacklist patterns.
@@ -76,6 +89,17 @@ func NewManager(whitelist, blacklist []string, journald bool) *Manager {
 		blacklist: blacklist,
 		journald:  journald,
 	}
+}
+
+// Update replaces the access-control settings. Safe for concurrent use.
+// It also invalidates the ListAccessible() cache so the next call rescans the filesystem.
+func (m *Manager) Update(whitelist, blacklist []string, journald bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.whitelist = whitelist
+	m.blacklist = blacklist
+	m.journald = journald
+	m.cacheTime = time.Time{}
 }
 
 // cleanPath canonicalizes a path to prevent directory traversal.
@@ -93,21 +117,27 @@ func cleanPath(path string) string {
 // journald:// paths are allowed when the journald source is enabled.
 // The path is canonicalized before matching to prevent traversal attacks.
 func (m *Manager) IsAllowed(path string) bool {
+	m.mu.RLock()
+	whitelist := m.whitelist
+	blacklist := m.blacklist
+	journald := m.journald
+	m.mu.RUnlock()
+
 	if IsJournaldPath(path) {
-		return m.journald
+		return journald
 	}
 
 	path = cleanPath(path)
 
 	// Check blacklist first — any match denies access.
-	for _, pattern := range m.blacklist {
+	for _, pattern := range blacklist {
 		if matchGlob(pattern, path) {
 			return false
 		}
 	}
 
 	// Must match at least one whitelist entry.
-	for _, pattern := range m.whitelist {
+	for _, pattern := range whitelist {
 		if matchGlob(pattern, path) {
 			return true
 		}
@@ -117,20 +147,15 @@ func (m *Manager) IsAllowed(path string) bool {
 }
 
 // matchGlob matches path against a glob pattern. Supports both
-// path/filepath.Match patterns and double-star (**) prefix matching.
+// path/filepath.Match patterns and double-star (**) patterns via doublestar.
 func matchGlob(pattern, path string) bool {
-	// Handle ** as "any number of path components".
+	// Use doublestar for ** patterns (correct prefix+suffix matching).
 	if strings.Contains(pattern, "**") {
-		// Convert **/ prefix into a prefix check.
-		prefix := strings.Split(pattern, "**")[0]
-		if prefix == "" {
-			// pattern starts with **: match anything.
-			return true
+		matched, err := doublestar.Match(pattern, path)
+		if err != nil {
+			return false
 		}
-		if strings.HasPrefix(path, prefix) {
-			return true
-		}
-		return false
+		return matched
 	}
 
 	// Try glob expansion (handles * within directory names).
@@ -158,10 +183,48 @@ func matchGlob(pattern, path string) bool {
 	return false
 }
 
+// checkACL checks whitelist/blacklist access against the given slices.
+// Caller must hold m.mu to ensure the slices are stable.
+func checkACL(path string, whitelist, blacklist []string) bool {
+	for _, pattern := range blacklist {
+		if matchGlob(pattern, path) {
+			return false
+		}
+	}
+	for _, pattern := range whitelist {
+		if matchGlob(pattern, path) {
+			return true
+		}
+	}
+	return false
+}
+
 // ListAccessible returns FileInfo for all accessible files matching the whitelist.
 // Directories matched by glob patterns are silently skipped.
 // If journald is enabled, a virtual journald:// entry is prepended.
+// Results are cached for listCacheTTL; the cache is invalidated by Update().
 func (m *Manager) ListAccessible() ([]FileInfo, error) {
+	// Fast path: return cached results while they are still valid.
+	m.mu.RLock()
+	if !m.cacheTime.IsZero() && time.Since(m.cacheTime) < listCacheTTL {
+		cached := make([]FileInfo, len(m.cachedFiles))
+		copy(cached, m.cachedFiles)
+		m.mu.RUnlock()
+		return cached, nil
+	}
+	m.mu.RUnlock()
+
+	// Slow path: perform the filesystem scan.
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	// Re-check under write lock — another goroutine may have populated the cache.
+	if !m.cacheTime.IsZero() && time.Since(m.cacheTime) < listCacheTTL {
+		cached := make([]FileInfo, len(m.cachedFiles))
+		copy(cached, m.cachedFiles)
+		return cached, nil
+	}
+
 	var results []FileInfo
 
 	if m.journald {
@@ -186,7 +249,9 @@ func (m *Manager) ListAccessible() ([]FileInfo, error) {
 				continue
 			}
 
-			if !m.IsAllowed(path) {
+			// IsAllowed acquires its own read lock; check inline to avoid deadlock.
+			path = cleanPath(path)
+			if !checkACL(path, m.whitelist, m.blacklist) {
 				continue
 			}
 
@@ -198,6 +263,11 @@ func (m *Manager) ListAccessible() ([]FileInfo, error) {
 			results = append(results, info)
 		}
 	}
+
+	// Store results in cache.
+	m.cachedFiles = make([]FileInfo, len(results))
+	copy(m.cachedFiles, results)
+	m.cacheTime = time.Now()
 
 	return results, nil
 }
@@ -237,7 +307,7 @@ func (m *Manager) FileInfo(path string) (FileInfo, error) {
 
 	// Count lines.
 	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
+	scanner.Buffer(make([]byte, scannerBufSize), scannerBufSize)
 	count := 0
 	for scanner.Scan() {
 		count++
@@ -248,7 +318,7 @@ func (m *Manager) FileInfo(path string) (FileInfo, error) {
 }
 
 // ReadFile reads lines from the given file according to opts.
-func (m *Manager) ReadFile(path string, opts ReadOptions) ([]string, error) {
+func (m *Manager) ReadFile(ctx context.Context, path string, opts ReadOptions) ([]string, error) {
 	path = cleanPath(path)
 	f, err := os.Open(path)
 	if err != nil {
@@ -256,50 +326,88 @@ func (m *Manager) ReadFile(path string, opts ReadOptions) ([]string, error) {
 	}
 	defer f.Close()
 
-	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
-
-	var allLines []string
-	for scanner.Scan() {
-		allLines = append(allLines, scanner.Text())
-	}
-	if err := scanner.Err(); err != nil {
-		return nil, fmt.Errorf("reading %q: %w", path, err)
-	}
-
-	// Apply time filters.
-	if opts.Since != nil || opts.Until != nil {
-		allLines = filterByTime(allLines, opts.Since, opts.Until)
-	}
-
-	// Apply offset.
-	if opts.Offset > 0 && opts.Offset < len(allLines) {
-		allLines = allLines[opts.Offset:]
-	}
-
-	// Determine how many lines to return.
 	n := opts.Lines
 	if n <= 0 {
 		n = 100
 	}
 
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, scannerBufSize), scannerBufSize)
+
 	if opts.Tail {
-		// Return last n lines.
-		if n >= len(allLines) {
-			return allLines, nil
+		// Ring buffer of size n: keep only the last n time-filtered lines.
+		ring := make([]string, n)
+		pos := 0
+		count := 0
+		for scanner.Scan() {
+			line := scanner.Text()
+			if opts.Since != nil || opts.Until != nil {
+				ts, ok := parseLineTimestamp(line)
+				if ok {
+					if opts.Since != nil && ts.Before(*opts.Since) {
+						continue
+					}
+					if opts.Until != nil && ts.After(*opts.Until) {
+						continue
+					}
+				}
+			}
+			ring[pos%n] = line
+			pos++
+			count++
 		}
-		return allLines[len(allLines)-n:], nil
+		if err := scanner.Err(); err != nil {
+			return nil, fmt.Errorf("reading %q: %w", path, err)
+		}
+		if count <= n {
+			return ring[:count], nil
+		}
+		out := make([]string, n)
+		start := pos % n
+		copy(out, ring[start:])
+		copy(out[n-start:], ring[:start])
+		return out, nil
 	}
 
-	// Return first n lines.
-	if n >= len(allLines) {
-		return allLines, nil
+	// Head mode: stop after offset + n lines.
+	fetch := n + opts.Offset
+	var lines []string
+	for scanner.Scan() {
+		line := scanner.Text()
+		if opts.Since != nil || opts.Until != nil {
+			ts, ok := parseLineTimestamp(line)
+			if ok {
+				if opts.Since != nil && ts.Before(*opts.Since) {
+					continue
+				}
+				if opts.Until != nil && ts.After(*opts.Until) {
+					continue
+				}
+			}
+		}
+		lines = append(lines, line)
+		if len(lines) >= fetch {
+			break
+		}
 	}
-	return allLines[:n], nil
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("reading %q: %w", path, err)
+	}
+
+	if opts.Offset > 0 {
+		if opts.Offset >= len(lines) {
+			return []string{}, nil
+		}
+		lines = lines[opts.Offset:]
+	}
+	if len(lines) > n {
+		lines = lines[:n]
+	}
+	return lines, nil
 }
 
 // SearchFile searches the file for lines matching opts.Pattern.
-func (m *Manager) SearchFile(path string, opts SearchOptions) ([]Match, error) {
+func (m *Manager) SearchFile(ctx context.Context, path string, opts SearchOptions) ([]Match, error) {
 	path = cleanPath(path)
 	if opts.Pattern == "" {
 		return nil, fmt.Errorf("search pattern must not be empty")
@@ -316,64 +424,92 @@ func (m *Manager) SearchFile(path string, opts SearchOptions) ([]Match, error) {
 	}
 	defer f.Close()
 
-	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
-
-	var allLines []string
-	for scanner.Scan() {
-		allLines = append(allLines, scanner.Text())
-	}
-	if err := scanner.Err(); err != nil {
-		return nil, fmt.Errorf("reading %q: %w", path, err)
-	}
-
 	maxResults := opts.MaxResults
 	if maxResults <= 0 {
 		maxResults = 200
 	}
 
+	k := opts.ContextLines
+	// Rolling deque for before-context: fixed capacity k.
+	var beforeDeque []string
+
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, scannerBufSize), scannerBufSize)
+
 	var results []Match
-	for i, line := range allLines {
+	lineNum := 0
+	afterPending := 0
+
+	for scanner.Scan() {
+		line := scanner.Text()
+		lineNum++
+
 		// Time filter.
 		if opts.Since != nil || opts.Until != nil {
 			ts, ok := parseLineTimestamp(line)
 			if ok {
 				if opts.Since != nil && ts.Before(*opts.Since) {
+					if k > 0 {
+						if len(beforeDeque) >= k {
+							beforeDeque = beforeDeque[1:]
+						}
+						beforeDeque = append(beforeDeque, line)
+					}
 					continue
 				}
 				if opts.Until != nil && ts.After(*opts.Until) {
+					if k > 0 {
+						if len(beforeDeque) >= k {
+							beforeDeque = beforeDeque[1:]
+						}
+						beforeDeque = append(beforeDeque, line)
+					}
 					continue
 				}
 			}
 		}
 
-		if !re.MatchString(line) {
-			continue
+		// Feed after-context of the last open match.
+		if afterPending > 0 {
+			results[len(results)-1].After = append(results[len(results)-1].After, line)
+			afterPending--
 		}
 
-		match := Match{
-			LineNumber: i + 1,
-			Line:       line,
-		}
+		if re.MatchString(line) {
+			match := Match{LineNumber: lineNum, Line: line}
+			if k > 0 && len(beforeDeque) > 0 {
+				match.Before = make([]string, len(beforeDeque))
+				copy(match.Before, beforeDeque)
+			}
+			results = append(results, match)
 
-		// Context lines before.
-		if opts.ContextLines > 0 {
-			start := max(0, i-opts.ContextLines)
-			if start < i {
-				match.Before = allLines[start:i]
+			// Extend after-window; overlapping windows are merged.
+			if k > 0 {
+				if afterPending < k {
+					afterPending = k
+				}
 			}
 
-			// Context lines after.
-			end := min(len(allLines), i+opts.ContextLines+1)
-			if end > i+1 {
-				match.After = allLines[i+1 : end]
+			if len(results) >= maxResults && afterPending == 0 {
+				break
 			}
 		}
 
-		results = append(results, match)
-		if len(results) >= maxResults {
+		// Advance rolling before-deque.
+		if k > 0 {
+			if len(beforeDeque) >= k {
+				beforeDeque = beforeDeque[1:]
+			}
+			beforeDeque = append(beforeDeque, line)
+		}
+
+		// Stop once last result's after-context is complete.
+		if len(results) >= maxResults && afterPending == 0 {
 			break
 		}
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("reading %q: %w", path, err)
 	}
 
 	return results, nil
@@ -438,7 +574,7 @@ func parseLineTimestamp(line string) (time.Time, bool) {
 
 // ReadJournald reads lines from the systemd journal.
 // path may be "journald://" (all units) or "journald://unit.service".
-func (m *Manager) ReadJournald(path string, opts ReadOptions) ([]string, error) {
+func (m *Manager) ReadJournald(ctx context.Context, path string, opts ReadOptions) ([]string, error) {
 	unit := journaldUnit(path)
 	n := opts.Lines
 	if n <= 0 {
@@ -451,7 +587,7 @@ func (m *Manager) ReadJournald(path string, opts ReadOptions) ([]string, error) 
 		// journalctl -n N returns the last N entries directly.
 		fetch := n + opts.Offset
 		args = append(args, "-n", strconv.Itoa(fetch))
-		out, err := exec.Command("journalctl", args...).Output()
+		out, err := exec.CommandContext(ctx, "journalctl", args...).Output()
 		if err != nil {
 			return nil, fmt.Errorf("journalctl: %w", err)
 		}
@@ -470,7 +606,7 @@ func (m *Manager) ReadJournald(path string, opts ReadOptions) ([]string, error) 
 
 	// For head-style reading, stream and stop early.
 	fetch := n + opts.Offset
-	cmd := exec.Command("journalctl", args...)
+	cmd := exec.CommandContext(ctx, "journalctl", args...)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return nil, fmt.Errorf("journalctl pipe: %w", err)
@@ -500,7 +636,7 @@ func (m *Manager) ReadJournald(path string, opts ReadOptions) ([]string, error) 
 }
 
 // SearchJournald searches the systemd journal for lines matching opts.Pattern.
-func (m *Manager) SearchJournald(path string, opts SearchOptions) ([]Match, error) {
+func (m *Manager) SearchJournald(ctx context.Context, path string, opts SearchOptions) ([]Match, error) {
 	unit := journaldUnit(path)
 
 	re, err := regexp.Compile(opts.Pattern)
@@ -508,39 +644,71 @@ func (m *Manager) SearchJournald(path string, opts SearchOptions) ([]Match, erro
 		return nil, fmt.Errorf("invalid pattern %q: %w", opts.Pattern, err)
 	}
 
-	args := buildJournalArgs(unit, opts.Since, opts.Until)
-	out, err := exec.Command("journalctl", args...).Output()
-	if err != nil {
-		return nil, fmt.Errorf("journalctl: %w", err)
-	}
-	allLines := splitOutputLines(out)
-
 	maxResults := opts.MaxResults
 	if maxResults <= 0 {
 		maxResults = 200
 	}
 
+	args := buildJournalArgs(unit, opts.Since, opts.Until)
+	cmd := exec.CommandContext(ctx, "journalctl", args...)
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, fmt.Errorf("journalctl pipe: %w", err)
+	}
+	if err := cmd.Start(); err != nil {
+		return nil, fmt.Errorf("journalctl start: %w", err)
+	}
+
+	k := opts.ContextLines
+	var beforeDeque []string
 	var results []Match
-	for i, line := range allLines {
-		if !re.MatchString(line) {
-			continue
+	lineNum := 0
+	afterPending := 0
+
+	scanner := bufio.NewScanner(stdout)
+	for scanner.Scan() {
+		line := scanner.Text()
+		lineNum++
+
+		if afterPending > 0 {
+			results[len(results)-1].After = append(results[len(results)-1].After, line)
+			afterPending--
 		}
-		m2 := Match{LineNumber: i + 1, Line: line}
-		if opts.ContextLines > 0 {
-			start := max(0, i-opts.ContextLines)
-			if start < i {
-				m2.Before = allLines[start:i]
+
+		if re.MatchString(line) {
+			match := Match{LineNumber: lineNum, Line: line}
+			if k > 0 && len(beforeDeque) > 0 {
+				match.Before = make([]string, len(beforeDeque))
+				copy(match.Before, beforeDeque)
 			}
-			end := min(len(allLines), i+opts.ContextLines+1)
-			if end > i+1 {
-				m2.After = allLines[i+1 : end]
+			results = append(results, match)
+
+			if k > 0 {
+				if afterPending < k {
+					afterPending = k
+				}
+			}
+
+			if len(results) >= maxResults && afterPending == 0 {
+				break
 			}
 		}
-		results = append(results, m2)
-		if len(results) >= maxResults {
+
+		if k > 0 {
+			if len(beforeDeque) >= k {
+				beforeDeque = beforeDeque[1:]
+			}
+			beforeDeque = append(beforeDeque, line)
+		}
+
+		if len(results) >= maxResults && afterPending == 0 {
 			break
 		}
 	}
+
+	_ = cmd.Process.Kill()
+	_ = cmd.Wait()
+
 	return results, nil
 }
 

@@ -27,3 +27,12 @@ logs:
 
 audit:
   syslog: true
+
+security:
+  fail2ban:
+    enabled: {{ logmcp_fail2ban_enabled | default(true) | lower }}
+{% if logmcp_rate_limit_max_failures is defined %}
+  rate_limit:
+    max_failures: {{ logmcp_rate_limit_max_failures }}
+    window_seconds: {{ logmcp_rate_limit_window_seconds | default(60) }}
+{% endif %}

@@ -4,51 +4,51 @@ Real-world scenarios that show why read-only log access from an AI makes a tangi
 
 ---
 
-## Asterisk / VoIP Server — Paket-Kompilierung und Abhängigkeitsfehler debuggen
+## Asterisk / VoIP Server — Debugging Package Compilation and Dependency Errors
 
-### Warum ist das schwierig?
+### Why is this difficult?
 
-Asterisk und verwandte VoIP-Pakete (DAHDI, PJSIP, codec_g729 o.ä.) liegen oft nicht fertig in den Debian-Standardrepositorien. Neue Versionen müssen aus dem Quellcode kompiliert werden — mit eigenen `./configure`-Flags, Kernel-Headern, und einem langen Tail an C-Kompilierungsfehlern, die sich über tausende Zeilen Build-Output verteilen.
+Asterisk and related VoIP packages (DAHDI, PJSIP, codec_g729, etc.) are often not available pre-built in standard Debian repositories. New versions must be compiled from source — with custom `./configure` flags, kernel headers, and a long tail of C compilation errors spread across thousands of lines of build output.
 
-Klassische Situation: Das System zieht ein neues Paket, ein Modul lässt sich nicht mehr laden, der Dienst startet nicht. Die Fehlerursache liegt irgendwo in `make` output, `dmesg`, `asterisk -rvvv` oder `journalctl` — aber wer soll das alles durchlesen?
+A typical situation: the system pulls a new package, a module can no longer be loaded, the service won't start. The root cause is somewhere in `make` output, `dmesg`, `asterisk -rvvv`, or `journalctl` — but who has time to read all of that?
 
-### Wie hilft LogMCP?
+### How does LogMCP help?
 
-LogMCP gibt dem AI-Assistenten Lesezugriff auf:
+LogMCP gives the AI assistant read access to:
 
-- `/var/log/asterisk/full` — vollständiges Asterisk-Log
-- `journald://` — systemd-Journal für Service-Start und Kernel-Events
-- Build-Logs (z.B. `/var/log/asterisk-build.log`), sofern im Whitelist
+- `/var/log/asterisk/full` — full Asterisk log
+- `journald://` — systemd journal for service startup and kernel events
+- Build logs (e.g. `/var/log/asterisk-build.log`), if whitelisted
 
-**Typischer Ablauf:**
+**Typical workflow:**
 
-> **Ich:** Der Asterisk-Service startet nicht nach dem letzten Paket-Update. Kannst du dir die Logs ansehen?
+> **Me:** The Asterisk service won't start after the last package update. Can you take a look at the logs?
 >
-> **KI:** Ich schaue mir das Journal und das Asterisk-Log an.
-> *(liest `journald://` und `/var/log/asterisk/full`)*
+> **AI:** Let me check the journal and the Asterisk log.
+> *(reads `journald://` and `/var/log/asterisk/full`)*
 >
-> **KI:** Im Journal sehe ich `DAHDI: Failed to open /dev/dahdi/ctl — No such file or directory`. Das Kernel-Modul `dahdi` ist nicht geladen. Gleichzeitig zeigt das Asterisk-Log `chan_dahdi.so: undefined symbol: dahdi_get_version` — das deutet darauf hin, dass `chan_dahdi` gegen eine andere DAHDI-Version kompiliert wurde als die aktuell laufende.
+> **AI:** In the journal I see `DAHDI: Failed to open /dev/dahdi/ctl — No such file or directory`. The `dahdi` kernel module is not loaded. At the same time, the Asterisk log shows `chan_dahdi.so: undefined symbol: dahdi_get_version` — this suggests that `chan_dahdi` was compiled against a different version of DAHDI than the one currently running.
 >
-> **Ich:** Was soll ich tun?
+> **Me:** What should I do?
 >
-> **KI:** Prüf zuerst, welche DAHDI-Version installiert ist (`dpkg -l | grep dahdi`) und welche im Kernel läuft (`modinfo dahdi`). Wenn die Versionen abweichen, muss `chan_dahdi` neu kompiliert werden. Ich kann dich durch den Prozess führen.
+> **AI:** First check which DAHDI version is installed (`dpkg -l | grep dahdi`) and which one is running in the kernel (`modinfo dahdi`). If the versions differ, `chan_dahdi` needs to be recompiled. I can walk you through the process.
 
-### Der Vorteil
+### The advantage
 
-Die KI hat keinen `sudo`, kein Shell-Zugang, keine Schreibrechte. Sie liest nur — und findet das Problem in Sekunden, für das ein erfahrener Admin Minuten oder Stunden gebraucht hätte. Der Admin führt die Korrektur dann selbst aus, informiert durch die Diagnose.
+The AI has no `sudo`, no shell access, no write permissions. It only reads — and finds the problem in seconds that an experienced admin might have spent minutes or hours on. The admin then carries out the fix themselves, informed by the diagnosis.
 
 ---
 
-## Webserver mit Caddy Reverse Proxy — produktive Installation
+## Web Server with Caddy Reverse Proxy — Production Setup
 
-### Warum diese Variante?
+### Why this approach?
 
-Für produktive Setups mit einem öffentlichen Domainnamen übernimmt Caddy das TLS-Termination (Let's Encrypt automatisch) und leitet Anfragen intern an LogMCP weiter. LogMCP läuft ohne eigenes TLS, nur auf `127.0.0.1`.
+For production setups with a public domain name, Caddy handles TLS termination (Let's Encrypt automatically) and forwards requests internally to LogMCP. LogMCP runs without its own TLS, only on `127.0.0.1`.
 
-Das ist die empfohlene Variante wenn:
-- Du eine öffentliche Domain hast (z.B. `logs.example.com`)
-- Du Let's Encrypt-Zertifikate willst, ohne sie selbst zu verwalten
-- Mehrere Dienste hinter demselben Caddy laufen
+This is the recommended approach when:
+- You have a public domain (e.g. `logs.example.com`)
+- You want Let's Encrypt certificates without managing them yourself
+- Multiple services run behind the same Caddy instance
 
 ### Wie sieht das aus?
 
@@ -60,7 +60,7 @@ logs.example.com {
 }
 ```
 
-LogMCP gibt dir das Snippet fertig aus:
+LogMCP generates the snippet for you:
 
 ```sh
 logmcp service caddy-snippet
@@ -73,7 +73,7 @@ server:
   host: 127.0.0.1
   port: 7788
   tls:
-    mode: off          # TLS macht Caddy
+    mode: off          # TLS is handled by Caddy
 
 auth:
   tokens:
@@ -98,32 +98,32 @@ auth:
 }
 ```
 
-### Fragen und Antworten
+### Questions and Answers
 
-**F: Muss ich LogMCP neu starten, wenn Caddy neu startet?**
-Nein. LogMCP und Caddy sind unabhängige systemd-Services. Caddy ist nur ein vorgelagerter Proxy.
+**Q: Do I need to restart LogMCP when Caddy restarts?**
+No. LogMCP and Caddy are independent systemd services. Caddy is just an upstream proxy.
 
-**F: Kann ich den Pfad `/logmcp/` ändern?**
-Ja — in der Caddy-Config und in der `server.prefix`-Einstellung von LogMCP. Beides muss übereinstimmen.
+**Q: Can I change the `/logmcp/` path?**
+Yes — in the Caddy config and in LogMCP's `server.prefix` setting. Both must match.
 
-**F: Was passiert, wenn der Token geleakt wird?**
-`logmcp token renew <name>` — der Token wird sofort ungültig, ein neuer wird generiert. Laufende Verbindungen fallen ab, der Service selbst läuft weiter.
+**Q: What happens if the token is leaked?**
+`logmcp token renew <name>` — the token is immediately invalidated and a new one is generated. Active connections drop, but the service itself keeps running.
 
 ---
 
-## Standalone-Betrieb mit eigenem TLS
+## Standalone Operation with Custom TLS
 
-### Wann passt das?
+### When does this fit?
 
-Wenn kein Reverse Proxy vorhanden ist und du LogMCP direkt mit HTTPS betreiben willst — z.B. auf einem Homelab-Server ohne öffentliche Domain, oder als schnelles Setup ohne Caddy-Abhängigkeit.
+When no reverse proxy is available and you want to run LogMCP directly with HTTPS — e.g. on a homelab server without a public domain, or as a quick setup without a Caddy dependency.
 
-LogMCP kann:
-- Ein **selbstsigniertes Zertifikat** beim ersten Start automatisch generieren
-- Ein **eigenes Zertifikat** einbinden (Let's Encrypt manuell, eigene CA)
+LogMCP can:
+- Automatically generate a **self-signed certificate** on first start
+- Use a **custom certificate** (manually obtained Let's Encrypt, private CA)
 
 ### Setup
 
-Der Wizard fragt beim `logmcp setup` nach dem TLS-Modus:
+The wizard asks for the TLS mode during `logmcp setup`:
 
 ```
 TLS mode?
@@ -132,28 +132,28 @@ TLS mode?
   [3] off (behind reverse proxy)
 ```
 
-Mit selbstsigniertem Cert läuft LogMCP direkt auf Port 7788 (oder einem anderen Port) mit HTTPS. Der Client muss `tlsSkipVerify: true` setzen oder das Zertifikat importieren.
+With a self-signed cert, LogMCP runs directly on port 7788 (or another port) with HTTPS. The client must set `tlsSkipVerify: true` or import the certificate.
 
-### Fragen und Antworten
+### Questions and Answers
 
-**F: Mein AI-Client meldet "certificate verify failed" — was tun?**
+**Q: My AI client reports "certificate verify failed" — what to do?**
 
-Entweder das selbstsignierte Zertifikat auf dem Client importieren, oder in der MCP-Client-Konfiguration `tlsSkipVerify: true` setzen. Für interne Netze ist das akzeptabel; für öffentliche Endpunkte lieber Caddy + Let's Encrypt.
+Either import the self-signed certificate on the client, or set `tlsSkipVerify: true` in the MCP client configuration. For internal networks this is acceptable; for public endpoints, prefer Caddy + Let's Encrypt.
 
-**F: Kann ich LogMCP auch ohne root betreiben?**
+**Q: Can I run LogMCP without root?**
 
-Ja, wenn du auf einem Port > 1024 lauschst (z.B. 7788) und die Config-Datei im Home-Verzeichnis liegt:
+Yes, if you listen on a port > 1024 (e.g. 7788) and the config file is in the home directory:
 
 ```sh
 logmcp serve --config ~/.logmcp/config.yaml
 ```
 
-Setup-Wizard als root ist nur nötig, um in `/etc/logmcp/` zu schreiben und den systemd-Service zu installieren.
+The setup wizard as root is only needed to write to `/etc/logmcp/` and install the systemd service.
 
-**F: Welcher Port ist Standard?**
+**Q: What is the default port?**
 
-`7788`. Kann in `config.yaml` unter `server.port` geändert werden.
+`7788`. Can be changed in `config.yaml` under `server.port`.
 
 ---
 
-*Weitere Szenarien geplant: Datenbank-Logs, Multi-Server-Setup, CI/CD-Integration.*
+*More scenarios planned: database logs, multi-server setup, CI/CD integration.*

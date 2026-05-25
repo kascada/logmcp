@@ -10,13 +10,46 @@ LogMCP is an open-source [MCP](https://modelcontextprotocol.io) server that expo
 
 ## Get Started
 
+### Option A: Quickstart (no root required)
+
+Try LogMCP in under a minute — no config file, no root, no systemd:
+
+```sh
+logmcp quickstart
+```
+
+The command checks your group memberships (`adm`, `systemd-journal`), generates a bearer token and a self-signed TLS certificate, starts the server, and prints a ready-to-paste `claude mcp add` command.
+
+**Running as root?** Pass `--user <name>` and LogMCP will add the user to the required groups and re-launch as that user — root is not needed for future starts.
+
+> **Note:** Token and certificate are ephemeral. The token changes on every start. For a permanent setup use Option B.
+
+```sh
+logmcp quickstart --port 7789 --token mytoken   # optional flags
+```
+
+After testing, remove the server from Claude Code:
+
+```sh
+claude mcp remove logmcp-quickstart
+```
+
+---
+
+### Option B: Permanent installation (recommended)
+
 **1. Install**
 
 ```sh
 go install github.com/kascada/logmcp@latest
 ```
 
-Or download a pre-built `.deb` from the [releases page](https://github.com/kascada/logmcp/releases).
+Or install the pre-built `.deb` (replace `x.y.z` with the [latest version](https://github.com/kascada/logmcp/releases)):
+
+```sh
+curl -LO https://github.com/kascada/logmcp/releases/download/vx.y.z/logmcp_x.y.z_amd64.deb
+sudo dpkg -i logmcp_x.y.z_amd64.deb
+```
 
 **2. Run the setup wizard**
 
@@ -102,6 +135,7 @@ sudo systemctl start logmcp
 | Command | Description |
 |---|---|
 | `logmcp serve` | Start the MCP server (default) |
+| `logmcp quickstart` | Start instantly without config file (no root required) |
 | `logmcp setup` | Interactive setup wizard |
 | `logmcp check` | Verify configuration and environment |
 | `logmcp token list` | List configured bearer tokens |
@@ -119,6 +153,20 @@ sudo systemctl start logmcp
 | `logmcp client-config claude-code` | Print Claude Code MCP config |
 | `logmcp client-config vscode` | Print VS Code MCP config |
 | `logmcp client-config claude-desktop` | Print Claude Desktop MCP config |
+
+## MCP Tools
+
+These are the tools LogMCP exposes to AI assistants:
+
+| Tool | Description |
+|---|---|
+| `list_logs` | List all log files the server has been configured to expose |
+| `read_log` | Read lines from a log file — head, tail, offset, or time window |
+| `search_log` | Search a log file by regexp with optional context lines and time filter |
+| `log_info` | File metadata: size, line count, last modified |
+| `check_environment` | Server-side health checks (config, TLS, whitelist, syslog, databases) |
+
+Extensions may add further tools (e.g. `switchboard_debug` for the Switchboard extension).
 
 ## Case Studies
 

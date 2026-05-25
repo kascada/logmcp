@@ -19,3 +19,7 @@ All log access is enforced server-side via a whitelist. The server returns an er
 ## Time filters
 
 `since` and `until` parameters accept either RFC3339 timestamps (`2024-01-15T10:00:00Z`) or relative durations (`1h`, `30m`, `2h30m`). Relative durations are resolved against the server's current time.
+
+## Documentation
+
+Documentation is available as MCP resources. Start with `logmcp://docs/index` for an overview of all available docs. Use `check_config` to inspect the current server configuration and discover optional parameters.

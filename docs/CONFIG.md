@@ -224,6 +224,71 @@ Expose the systemd journal as a virtual log source. Appears in `list_logs` as `j
 
 ---
 
+## `security`
+
+### `security.rate_limit`
+
+| Type | Default |
+|------|---------|
+| object \| absent | absent (deaktiviert) |
+
+Zweistufiges Rate Limiting für fehlgeschlagene Auth-Versuche pro Quell-IP. Wenn eine IP ein Limit überschreitet, antwortet LogMCP sofort mit `429` ohne den Token zu prüfen. Fehler werden in beide Stufen eingetragen. Ohne diesen Block ist das Feature deaktiviert.
+
+Beide Stufen (`burst` und `sustained`) sind unabhängig optional — eine Stufe weglassen deaktiviert nur diese Stufe.
+
+```yaml
+security:
+  rate_limit:
+    burst:
+      max_failures: 20       # höherer Threshold — MCP-Einrichtung kostet Versuche
+      window_seconds: 30
+    sustained:
+      max_failures: 50
+      window_seconds: 600    # 10 Minuten
+```
+
+**`burst`** — schnelle Bremse gegen kurze Angriffsbursts:
+
+| Feld | Typ | Beschreibung |
+|------|-----|--------------|
+| `max_failures` | int | Maximale Fehler im Zeitfenster |
+| `window_seconds` | int | Länge des Zeitfensters in Sekunden |
+
+**`sustained`** — langsame Sperre gegen persistente, verteilte Versuche:
+
+| Feld | Typ | Beschreibung |
+|------|-----|--------------|
+| `max_failures` | int | Maximale Fehler im Zeitfenster |
+| `window_seconds` | int | Länge des Zeitfensters in Sekunden |
+
+Die Reihenfolge in der Middleware: erst `burst`-Check, dann `sustained`-Check, dann Token-Prüfung. Jede Stufe sperrt unabhängig. Im `quickstart`-Modus sind beide Stufen mit den Defaults (20/30 s und 50/600 s) immer aktiv.
+
+### `security.fail2ban`
+
+| Type | Default |
+|------|---------|
+| object | `enabled: true` |
+
+Steuert die fail2ban-Integration. Bei `enabled: true` bietet `logmcp setup` die Installation der Filter-Dateien an; `logmcp security install-fail2ban` installiert sie nicht-interaktiv.
+
+```yaml
+security:
+  fail2ban:
+    enabled: true
+    # filter_dir: /etc/fail2ban/filter.d   # Standard
+    # jail_dir:   /etc/fail2ban/jail.d      # Standard
+```
+
+| Feld | Typ | Default | Beschreibung |
+|------|-----|---------|--------------|
+| `enabled` | bool | `true` | fail2ban-Integration aktiv |
+| `filter_dir` | string | `/etc/fail2ban/filter.d` | Zielverzeichnis für den Filter |
+| `jail_dir` | string | `/etc/fail2ban/jail.d` | Zielverzeichnis für den Jail |
+
+Siehe [LOGGING.md](LOGGING.md) für Details zu Filter-Pattern und Jail-Defaults.
+
+---
+
 ## `audit`
 
 ### `audit.syslog`
