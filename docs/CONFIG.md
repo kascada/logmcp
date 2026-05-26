@@ -50,11 +50,10 @@ tools:
   disabled: []
 
 extensions:
-  switchboard:
-    enabled: false
-    calls_dir:       "/var/log/switchboard/calls"
-    sim_dir:         "/var/log/switchboard/sim"
-    transcripts_dir: "/var/log/switchboard/transcripts"
+  clitool:
+    - name: switchboard
+      command: /usr/local/bin/switchboard
+      timeout_seconds: 10
   databases:
     mysql:
       - name: "mydb"
@@ -212,7 +211,15 @@ Pattern semantics:
 |------|---------|
 | list of glob strings | `[]` |
 
-Glob patterns that deny access regardless of whitelist matches. Blacklist takes precedence.
+Glob patterns that deny access regardless of whitelist matches. Blacklist takes precedence. Applies to both regular file paths and `journald://` paths.
+
+```yaml
+logs:
+  blacklist:
+    - "/var/log/private/**"
+    - "journald://sshd.service"   # block a specific unit
+    - "journald://kernel"         # block kernel messages
+```
 
 ### `logs.journald`
 
@@ -221,6 +228,16 @@ Glob patterns that deny access regardless of whitelist matches. Blacklist takes 
 | bool | `false` |
 
 Expose the systemd journal as a virtual log source. Appears in `list_logs` as `journald://`. Use `journald://unit.service` to filter to a single unit. Reads via `journalctl --no-pager --output=short-iso`.
+
+When `journald: true`, all units are accessible by default. To restrict access to specific units, add `journald://unit.service` patterns to `logs.blacklist`.
+
+```yaml
+logs:
+  journald: true
+  blacklist:
+    - "journald://sshd.service"
+    - "journald://sudo"
+```
 
 ---
 
@@ -309,7 +326,7 @@ Write every MCP tool call and denied access to syslog. Log content and search pa
 |------|---------|
 | list of strings | `[]` |
 
-MCP tool names to hide from AI clients. Useful for restricting which tools a particular deployment exposes. Valid values: `list_logs`, `read_log`, `search_log`, `log_info`, `check_environment`, `switchboard_debug`.
+MCP tool names to hide from AI clients. Useful for restricting which tools a particular deployment exposes. Valid values: `list_logs`, `read_log`, `search_log`, `log_info`, `check_environment`. Tools registered by clitool extensions (e.g. `switchboard_status`) can also be listed here.
 
 Example — expose only listing and reading, no search:
 
@@ -323,18 +340,36 @@ tools:
 
 ## `extensions`
 
-### `extensions.switchboard`
+### `extensions.clitool[]`
 
-Optional Switchboard extension for call-center log analysis.
+List of clitool-based MCP extensions. Each extension is an external CLI program that follows the [clitool interface convention](CLITOOL.md). LogMCP calls `<command> list` at startup to discover tools and registers them with a name prefix. Every tool call is forwarded to `<command> call <tool> --token-stdin` with the Bearer token passed via stdin.
+
+```yaml
+extensions:
+  clitool:
+    - name: switchboard
+      command: /usr/local/bin/switchboard
+      timeout_seconds: 10
+    - name: asterisk
+      command: /usr/local/bin/asterisk-ctl
+    - name: switchboard_rpc
+      command: /usr/local/bin/switchboard
+      mode: rpc
+      redis_addr: "127.0.0.1:6379"
+      timeout_seconds: 10
+```
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `enabled` | bool | `false` | Enable the extension |
-| `calls_dir` | string | `/var/log/switchboard/calls` | Call log directory |
-| `sim_dir` | string | `/var/log/switchboard/sim` | Simulation log directory |
-| `transcripts_dir` | string | `/var/log/switchboard/transcripts` | Transcript directory |
+| `name` | string | **required** | Prefix for all tools from this extension (e.g. `switchboard` → `switchboard_status`). Must match `[a-z][a-z0-9_]*`. |
+| `command` | string | **required** | Full path to the clitool executable. Used for `list` at startup and for `call` when `mode: cli`. |
+| `timeout_seconds` | int | `10` | Per-call timeout for both `list` and `call`/RPC invocations. |
+| `mode` | string | `cli` | Transport for tool calls: `cli` spawns a subprocess per call; `rpc` uses a Redis request/response channel to avoid Python process-startup overhead. The `command` is still used at startup to discover tools via `list`. |
+| `redis_addr` | string | `127.0.0.1:6379` | Redis server address. Only used when `mode: rpc`. Expects a local Redis instance with no authentication. |
 
-When enabled, exposes the `switchboard_debug` MCP tool.
+If a configured extension cannot be reached at startup (program not found, non-zero exit, or invalid JSON output from `list`), LogMCP refuses to start. This is intentional — an unreachable extension is a configuration error.
+
+See [CLITOOL.md](CLITOOL.md) for the full interface specification including the `list`/`call` protocol, auth flow, and error codes.
 
 ### `extensions.databases.mysql[]`
 

@@ -5,6 +5,7 @@ import (
 	"embed"
 	"encoding/json"
 	"fmt"
+	"io/fs"
 	"net"
 	"net/http"
 	"os"
@@ -19,13 +20,17 @@ import (
 	"github.com/kleist-dev/logmcp/internal/auth"
 	"github.com/kleist-dev/logmcp/internal/check"
 	"github.com/kleist-dev/logmcp/internal/config"
-	switchboardext "github.com/kleist-dev/logmcp/internal/extensions/switchboard"
+	"github.com/kleist-dev/logmcp/internal/extensions/clitool"
+	"github.com/kleist-dev/logmcp/internal/extensions/rpc"
 	"github.com/kleist-dev/logmcp/internal/logs"
 	"github.com/kleist-dev/logmcp/internal/macro"
 	internaltls "github.com/kleist-dev/logmcp/internal/tls"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 )
+
+const authVerifyCacheTTL = 10 * time.Minute
+const maxRequestBodyBytes = 4 * 1024 * 1024 // 4 MB — prevents OOM from oversized MCP requests
 
 // clientIPKey is the context key used to propagate client IP to tool handlers.
 type clientIPKey struct{}
@@ -40,6 +45,7 @@ type Server struct {
 	httpSrv          *server.StreamableHTTPServer
 	burstLimiter     *auth.RateLimiter
 	sustainedLimiter *auth.RateLimiter
+	verifyCache      *auth.VerifyCache
 }
 
 // New creates a new MCP Server with all tools registered.
@@ -51,6 +57,9 @@ func New(cfg *config.Config, logMgr *logs.Manager, docsFS embed.FS) (*Server, er
 		docsFS:           docsFS,
 		burstLimiter:     burst,
 		sustainedLimiter: sustained,
+	}
+	if cfg.Auth.Authenticator != nil {
+		s.verifyCache = auth.NewVerifyCache(makeAuthVerifyFunc(cfg), authVerifyCacheTTL)
 	}
 
 	// Build the MCP server.
@@ -64,6 +73,8 @@ func New(cfg *config.Config, logMgr *logs.Manager, docsFS embed.FS) (*Server, er
 	s.registerTools()
 	s.registerResources()
 
+	s.registerCltoolExtensions()
+
 	// Build the StreamableHTTP transport.
 	s.httpSrv = server.NewStreamableHTTPServer(
 		s.mcpSrv,
@@ -74,39 +85,49 @@ func New(cfg *config.Config, logMgr *logs.Manager, docsFS embed.FS) (*Server, er
 	return s, nil
 }
 
-// registerResources adds the embedded documentation files as MCP resources.
+// registerResources adds all embedded docs/*.md files as MCP resources.
 func (s *Server) registerResources() {
-	type docResource struct {
-		uri      string
-		name     string
-		file     string
-		mimeType string
-	}
-
-	resources := []docResource{
-		{uri: "logmcp://docs/index", name: "LogMCP Docs Index", file: "docs/index.md", mimeType: "text/markdown"},
-		{uri: "logmcp://docs/config", name: "LogMCP Configuration Reference", file: "docs/CONFIG.md", mimeType: "text/markdown"},
-		{uri: "logmcp://docs/logging", name: "LogMCP Logging Reference", file: "docs/LOGGING.md", mimeType: "text/markdown"},
-		{uri: "logmcp://docs/ansible", name: "LogMCP Ansible Role Reference", file: "docs/ANSIBLE.md", mimeType: "text/markdown"},
-	}
-
-	for _, r := range resources {
-		res := r // capture loop variable
-		resource := mcp.NewResource(res.uri, res.name, mcp.WithMIMEType(res.mimeType))
+	fs.WalkDir(s.docsFS, "docs", func(path string, d fs.DirEntry, err error) error { //nolint:errcheck
+		if err != nil || d.IsDir() || !strings.HasSuffix(path, ".md") {
+			return nil
+		}
+		data, readErr := s.docsFS.ReadFile(path)
+		if readErr != nil {
+			return nil
+		}
+		stem := strings.ToLower(strings.TrimSuffix(d.Name(), ".md"))
+		uri := "logmcp://docs/" + stem
+		name := docTitle(data)
+		if name == "" {
+			name = "LogMCP " + d.Name()
+		}
+		filePath := path
+		resource := mcp.NewResource(uri, name, mcp.WithMIMEType("text/markdown"))
 		s.mcpSrv.AddResource(resource, func(ctx context.Context, req mcp.ReadResourceRequest) ([]mcp.ResourceContents, error) {
-			data, err := s.docsFS.ReadFile(res.file)
+			content, err := s.docsFS.ReadFile(filePath)
 			if err != nil {
-				return nil, fmt.Errorf("reading embedded doc %s: %w", res.file, err)
+				return nil, fmt.Errorf("reading embedded doc %s: %w", filePath, err)
 			}
 			return []mcp.ResourceContents{
 				mcp.TextResourceContents{
-					URI:      res.uri,
-					MIMEType: res.mimeType,
-					Text:     string(data),
+					URI:      uri,
+					MIMEType: "text/markdown",
+					Text:     string(content),
 				},
 			}, nil
 		})
+		return nil
+	})
+}
+
+// docTitle returns the text of the first "# " heading in a markdown file.
+func docTitle(data []byte) string {
+	for _, line := range strings.SplitN(string(data), "\n", 30) {
+		if rest, ok := strings.CutPrefix(line, "# "); ok {
+			return strings.TrimSpace(rest)
+		}
 	}
+	return ""
 }
 
 // httpContextFunc injects the client IP and token name into the request context.
@@ -133,7 +154,7 @@ func extractClientIP(r *http.Request, trustedProxy bool) string {
 	if trustedProxy {
 		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
 			parts := strings.SplitN(xff, ",", 2)
-			return strings.TrimSpace(parts[0])
+			return sanitizeIP(strings.TrimSpace(parts[0]))
 		}
 	}
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
@@ -141,6 +162,17 @@ func extractClientIP(r *http.Request, trustedProxy bool) string {
 		return r.RemoteAddr
 	}
 	return host
+}
+
+// sanitizeIP strips any character not valid in an IP address to prevent log injection.
+func sanitizeIP(ip string) string {
+	for _, r := range ip {
+		if !((r >= '0' && r <= '9') || (r >= 'a' && r <= 'f') || (r >= 'A' && r <= 'F') ||
+			r == '.' || r == ':' || r == '[' || r == ']') {
+			return "invalid"
+		}
+	}
+	return ip
 }
 
 // registerTools adds all MCP tools to the server.
@@ -239,18 +271,6 @@ func (s *Server) registerTools() {
 		s.mcpSrv.AddTool(configTool, s.handleCheckConfig)
 	}
 
-	// --- switchboard_debug (only when extension is enabled) ---
-	if s.cfg.Extensions.Switchboard.Enabled && s.toolEnabled("switchboard_debug") {
-		sbDesc := loadToolDesc("switchboard_debug")
-		switchboardDebugTool := mcp.NewTool("switchboard_debug",
-			mcp.WithDescription(sbDesc.Description),
-			mcp.WithString("call_id",
-				mcp.Description(sbDesc.Params["call_id"]),
-			),
-		)
-		s.mcpSrv.AddTool(switchboardDebugTool, s.handleSwitchboardDebug)
-	}
-
 	// --- log_info ---
 	if s.toolEnabled("log_info") {
 		liDesc := loadToolDesc("log_info")
@@ -318,6 +338,19 @@ func marshalResult(v any) (*mcp.CallToolResult, error) {
 	return mcp.NewToolResultText(string(data)), nil
 }
 
+// parseTimeParam parses a named time/duration parameter value.
+// It returns nil, nil when value is empty (parameter was not supplied).
+func parseTimeParam(name, value string) (*time.Time, error) {
+	if value == "" {
+		return nil, nil
+	}
+	t, err := logs.ParseTimeOrDuration(value)
+	if err != nil {
+		return nil, fmt.Errorf("invalid %q value: %w", name, err)
+	}
+	return &t, nil
+}
+
 // handleListLogs implements the list_logs tool.
 func (s *Server) handleListLogs(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	clientIP := clientIPFromCtx(ctx)
@@ -352,25 +385,17 @@ func (s *Server) handleReadLog(ctx context.Context, req mcp.CallToolRequest) (*m
 		Offset: int(req.GetFloat("offset", 0)),
 	}
 
-	if sinceStr := req.GetString("since", ""); sinceStr != "" {
-		t, err := logs.ParseTimeOrDuration(sinceStr)
-		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("invalid 'since' value: %v", err)), nil
-		}
-		opts.Since = &t
+	var err error
+	opts.Since, err = parseTimeParam("since", req.GetString("since", ""))
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
 	}
-	if untilStr := req.GetString("until", ""); untilStr != "" {
-		t, err := logs.ParseTimeOrDuration(untilStr)
-		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("invalid 'until' value: %v", err)), nil
-		}
-		opts.Until = &t
+	opts.Until, err = parseTimeParam("until", req.GetString("until", ""))
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
 	}
 
-	var (
-		lines []string
-		err   error
-	)
+	var lines []string
 	if logs.IsJournaldPath(path) {
 		lines, err = s.logMgr.ReadJournald(ctx, path, opts)
 	} else {
@@ -419,25 +444,17 @@ func (s *Server) handleSearchLog(ctx context.Context, req mcp.CallToolRequest) (
 		ContextLines: int(req.GetFloat("context_lines", 0)),
 	}
 
-	if sinceStr := req.GetString("since", ""); sinceStr != "" {
-		t, err := logs.ParseTimeOrDuration(sinceStr)
-		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("invalid 'since' value: %v", err)), nil
-		}
-		opts.Since = &t
+	var err error
+	opts.Since, err = parseTimeParam("since", req.GetString("since", ""))
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
 	}
-	if untilStr := req.GetString("until", ""); untilStr != "" {
-		t, err := logs.ParseTimeOrDuration(untilStr)
-		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("invalid 'until' value: %v", err)), nil
-		}
-		opts.Until = &t
+	opts.Until, err = parseTimeParam("until", req.GetString("until", ""))
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
 	}
 
-	var (
-		matches []logs.Match
-		err     error
-	)
+	var matches []logs.Match
 	if logs.IsJournaldPath(path) {
 		matches, err = s.logMgr.SearchJournald(ctx, path, opts)
 	} else {
@@ -507,35 +524,102 @@ func (s *Server) handleCheckEnvironment(ctx context.Context, req mcp.CallToolReq
 	return marshalResult(result)
 }
 
+// optionalParam describes a config parameter that is at its default value.
+type optionalParam struct {
+	Name        string `json:"name"`
+	Default     string `json:"default"`
+	Explanation string `json:"explanation"`
+}
+
+// currentValues holds the active configuration values reported by check_config.
+type currentValues struct {
+	Name        string   `json:"name"`
+	ServerAddr  string   `json:"server_addr"`
+	TLSMode     string   `json:"tls_mode"`
+	ProxyMode   bool     `json:"proxy_mode"`
+	PathPrefix  string   `json:"path_prefix,omitempty"`
+	Domain      string   `json:"domain,omitempty"`
+	Whitelist   []string `json:"whitelist"`
+	Blacklist   []string `json:"blacklist,omitempty"`
+	Journald    bool     `json:"journald"`
+	AuditSyslog bool     `json:"audit_syslog"`
+	Fail2ban    bool     `json:"fail2ban"`
+	RateLimit   bool     `json:"rate_limit"`
+	Disabled    []string `json:"tools_disabled,omitempty"`
+	Macros      string   `json:"macros_dir,omitempty"`
+	MySQL       int      `json:"mysql_connections"`
+}
+
+// collectDefaults returns the list of optional config parameters that are
+// currently at their default (i.e. not explicitly configured).
+func collectDefaults(cfg *config.Config) []optionalParam {
+	var defaults []optionalParam
+
+	if !cfg.Proxy.Enabled {
+		defaults = append(defaults, optionalParam{
+			Name:        "proxy.enabled",
+			Default:     "false",
+			Explanation: "Enable when serving behind a reverse proxy (Caddy, nginx). Required for correct client IP detection and URL generation.",
+		})
+	}
+	if !cfg.Logs.Journald {
+		defaults = append(defaults, optionalParam{
+			Name:        "logs.journald",
+			Default:     "false",
+			Explanation: "Set to true to expose the systemd journal as a virtual journald:// log source.",
+		})
+	}
+	if len(cfg.Logs.Blacklist) == 0 {
+		defaults = append(defaults, optionalParam{
+			Name:        "logs.blacklist",
+			Default:     "[]",
+			Explanation: "Paths to exclude from whitelist matches. Useful to hide sensitive files covered by a wildcard pattern.",
+		})
+	}
+	if cfg.Security.RateLimit == nil {
+		defaults = append(defaults, optionalParam{
+			Name:        "security.rate_limit",
+			Default:     "null (disabled)",
+			Explanation: "Per-IP rate limiting for failed authentication attempts. Add burst and/or sustained sub-blocks to enable.",
+		})
+	}
+	if !cfg.Security.Fail2ban.Enabled {
+		defaults = append(defaults, optionalParam{
+			Name:        "security.fail2ban.enabled",
+			Default:     "false",
+			Explanation: "Install a fail2ban filter and jail for brute-force protection against repeated auth failures.",
+		})
+	}
+	if len(cfg.Tools.Disabled) == 0 {
+		defaults = append(defaults, optionalParam{
+			Name:        "tools.disabled",
+			Default:     "[]",
+			Explanation: "List tool names here to hide them from AI clients (e.g. [switchboard_debug] when the extension is not needed).",
+		})
+	}
+	if cfg.Extensions.Macros.Dir == "" {
+		defaults = append(defaults, optionalParam{
+			Name:        "extensions.macros.dir",
+			Default:     "\"\" (disabled)",
+			Explanation: "Directory for YAML macro files that define reusable log query shortcuts.",
+		})
+	}
+	if len(cfg.Extensions.Databases.MySQL) == 0 {
+		defaults = append(defaults, optionalParam{
+			Name:        "extensions.databases.mysql",
+			Default:     "[]",
+			Explanation: "MySQL connection configurations for database log access via the databases extension.",
+		})
+	}
+
+	return defaults
+}
+
 // handleCheckConfig implements the check_config tool.
 func (s *Server) handleCheckConfig(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	s.mu.RLock()
 	cfg := s.cfg
 	s.mu.RUnlock()
-
-	type optionalParam struct {
-		Name        string `json:"name"`
-		Default     string `json:"default"`
-		Explanation string `json:"explanation"`
-	}
-
-	type currentValues struct {
-		Name        string   `json:"name"`
-		ServerAddr  string   `json:"server_addr"`
-		TLSMode     string   `json:"tls_mode"`
-		ProxyMode   bool     `json:"proxy_mode"`
-		PathPrefix  string   `json:"path_prefix,omitempty"`
-		Domain      string   `json:"domain,omitempty"`
-		Whitelist   []string `json:"whitelist"`
-		Blacklist   []string `json:"blacklist,omitempty"`
-		Journald    bool     `json:"journald"`
-		AuditSyslog bool     `json:"audit_syslog"`
-		Fail2ban    bool     `json:"fail2ban"`
-		RateLimit   bool     `json:"rate_limit"`
-		Disabled    []string `json:"tools_disabled,omitempty"`
-		Macros      string   `json:"macros_dir,omitempty"`
-		MySQL       int      `json:"mysql_connections"`
-	}
 
 	current := currentValues{
 		Name:        cfg.Name,
@@ -555,87 +639,109 @@ func (s *Server) handleCheckConfig(ctx context.Context, req mcp.CallToolRequest)
 		MySQL:       len(cfg.Extensions.Databases.MySQL),
 	}
 
-	var atDefault []optionalParam
-
-	if !cfg.Proxy.Enabled {
-		atDefault = append(atDefault, optionalParam{
-			Name:        "proxy.enabled",
-			Default:     "false",
-			Explanation: "Enable when serving behind a reverse proxy (Caddy, nginx). Required for correct client IP detection and URL generation.",
-		})
-	}
-	if !cfg.Logs.Journald {
-		atDefault = append(atDefault, optionalParam{
-			Name:        "logs.journald",
-			Default:     "false",
-			Explanation: "Set to true to expose the systemd journal as a virtual journald:// log source.",
-		})
-	}
-	if len(cfg.Logs.Blacklist) == 0 {
-		atDefault = append(atDefault, optionalParam{
-			Name:        "logs.blacklist",
-			Default:     "[]",
-			Explanation: "Paths to exclude from whitelist matches. Useful to hide sensitive files covered by a wildcard pattern.",
-		})
-	}
-	if cfg.Security.RateLimit == nil {
-		atDefault = append(atDefault, optionalParam{
-			Name:        "security.rate_limit",
-			Default:     "null (disabled)",
-			Explanation: "Per-IP rate limiting for failed authentication attempts. Add burst and/or sustained sub-blocks to enable.",
-		})
-	}
-	if !cfg.Security.Fail2ban.Enabled {
-		atDefault = append(atDefault, optionalParam{
-			Name:        "security.fail2ban.enabled",
-			Default:     "false",
-			Explanation: "Install a fail2ban filter and jail for brute-force protection against repeated auth failures.",
-		})
-	}
-	if len(cfg.Tools.Disabled) == 0 {
-		atDefault = append(atDefault, optionalParam{
-			Name:        "tools.disabled",
-			Default:     "[]",
-			Explanation: "List tool names here to hide them from AI clients (e.g. [switchboard_debug] when the extension is not needed).",
-		})
-	}
-	if cfg.Extensions.Macros.Dir == "" {
-		atDefault = append(atDefault, optionalParam{
-			Name:        "extensions.macros.dir",
-			Default:     "\"\" (disabled)",
-			Explanation: "Directory for YAML macro files that define reusable log query shortcuts.",
-		})
-	}
-	if len(cfg.Extensions.Databases.MySQL) == 0 {
-		atDefault = append(atDefault, optionalParam{
-			Name:        "extensions.databases.mysql",
-			Default:     "[]",
-			Explanation: "MySQL connection configurations for database log access via the databases extension.",
-		})
-	}
-
 	result := struct {
-		Current  currentValues  `json:"current"`
+		Current  currentValues   `json:"current"`
 		Defaults []optionalParam `json:"defaults"`
 	}{
 		Current:  current,
-		Defaults: atDefault,
+		Defaults: collectDefaults(cfg),
 	}
 
 	return marshalResult(result)
 }
 
-// handleSwitchboardDebug implements the switchboard_debug tool.
-func (s *Server) handleSwitchboardDebug(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	s.mu.RLock()
-	cfg := s.cfg
-	s.mu.RUnlock()
-	callID := req.GetString("call_id", "")
-	result, err := switchboardext.Debug(cfg, callID)
-	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("switchboard_debug: %v", err)), nil
+// registerCltoolExtensions discovers and registers all configured clitool extensions.
+// For each extension, it calls `<command> list` to get tool definitions, then registers
+// each tool with a name prefix of `<ext.Name>_`. If an extension cannot be reached,
+// a warning is logged and the extension is skipped — the server starts regardless.
+// Use `logmcp check` to diagnose extension access problems.
+func (s *Server) registerCltoolExtensions() {
+	for _, ext := range s.cfg.Extensions.Clitool {
+		timeout := time.Duration(ext.TimeoutSeconds) * time.Second
+		if timeout <= 0 {
+			timeout = 10 * time.Second
+		}
+
+		tools, err := clitool.List(ext.Command, timeout)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "warning: clitool extension %q unavailable: %v (run `logmcp check` for details)\n", ext.Name, err)
+			continue
+		}
+
+		// Capture loop variables for closures.
+		extName := ext.Name
+		extCommand := ext.Command
+		extTimeout := timeout
+		extMode := ext.Mode
+		extRedisAddr := ext.RedisAddr
+		if extRedisAddr == "" {
+			extRedisAddr = "127.0.0.1:6379"
+		}
+
+		for _, toolDef := range tools {
+			prefixedName := extName + "_" + toolDef.Name
+			unprefixedName := toolDef.Name
+
+			desc := toolDef.Description
+			if len(toolDef.InputSchema) > 0 && string(toolDef.InputSchema) != "null" {
+				desc += "\n\nInput schema: " + string(toolDef.InputSchema)
+			}
+
+			tool := mcp.NewTool(prefixedName, mcp.WithDescription(desc))
+			s.mcpSrv.AddTool(tool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+				// Extract raw params from the request arguments.
+				var params json.RawMessage
+				if req.Params.Arguments != nil {
+					if data, err := json.Marshal(req.Params.Arguments); err == nil {
+						params = data
+					}
+				}
+
+				var result *clitool.CallResult
+				var err error
+
+				if extMode == "rpc" {
+					callerName := auth.TokenNameFromCtx(ctx)
+					callerScopes := auth.TokenScopesFromCtx(ctx)
+					if callerScopes == nil {
+						if t := s.cfg.Auth.Find(callerName); t != nil {
+							callerScopes = t.Scopes
+						} else {
+							callerScopes = []string{}
+						}
+					}
+					result, err = rpc.Call(ctx, extRedisAddr, unprefixedName, callerName, callerScopes, params, extTimeout)
+				} else {
+					token := auth.TokenValueFromCtx(ctx)
+					result, err = clitool.Call(ctx, extCommand, unprefixedName, token, params, extTimeout)
+				}
+
+				if err != nil {
+					return mcp.NewToolResultError(fmt.Sprintf("clitool call error: %v", err)), nil
+				}
+
+				switch result.Code {
+				case "auth_failed":
+					return mcp.NewToolResultError("authentication failed: " + result.Error), nil
+				case "scope_denied":
+					return mcp.NewToolResultError("permission denied: " + result.Error), nil
+				}
+
+				if !result.OK {
+					errMsg := result.Error
+					if errMsg == "" {
+						errMsg = "clitool call failed"
+					}
+					return mcp.NewToolResultError(errMsg), nil
+				}
+
+				if result.Result != nil {
+					return mcp.NewToolResultText(string(result.Result)), nil
+				}
+				return mcp.NewToolResultText("{}"), nil
+			})
+		}
 	}
-	return marshalResult(result)
 }
 
 // Start launches the MCP HTTP server, blocking until it exits.
@@ -680,13 +786,38 @@ func (s *Server) Start() error {
 	}
 
 	// Start signal handler before serving so no signal is missed.
+	cleanupCtx, cleanupCancel := context.WithCancel(context.Background())
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGTERM, syscall.SIGINT)
 	go func() {
 		<-quit
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		cleanupCancel()
+		shutCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		_ = httpSrv.Shutdown(ctx)
+		_ = httpSrv.Shutdown(shutCtx)
+	}()
+
+	// Periodically prune expired entries from rate limiters to prevent unbounded growth
+	// when many distinct IPs generate a single failure each (e.g. rotating-IP botnet).
+	go func() {
+		ticker := time.NewTicker(5 * time.Minute)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				s.mu.RLock()
+				bl, sl := s.burstLimiter, s.sustainedLimiter
+				s.mu.RUnlock()
+				if bl != nil {
+					bl.PruneAll()
+				}
+				if sl != nil {
+					sl.PruneAll()
+				}
+			case <-cleanupCtx.Done():
+				return
+			}
+		}
 	}()
 
 	var err error
@@ -704,6 +835,22 @@ func (s *Server) Start() error {
 	return err
 }
 
+// makeAuthVerifyFunc builds a VerifyFunc that calls the configured authenticator subprocess.
+func makeAuthVerifyFunc(cfg *config.Config) auth.VerifyFunc {
+	cmd := cfg.Auth.Authenticator.Command
+	timeout := time.Duration(cfg.Auth.Authenticator.TimeoutSeconds) * time.Second
+	if timeout <= 0 {
+		timeout = 10 * time.Second
+	}
+	return func(token string) (string, []string, bool, error) {
+		result, err := clitool.Verify(cmd, token, timeout)
+		if err != nil {
+			return "", nil, false, err
+		}
+		return result.Name, result.Scopes, result.Authenticated, nil
+	}
+}
+
 // newRateLimiters creates burst and sustained RateLimiters from config.
 // Either may be nil if that tier is absent from the config.
 func newRateLimiters(cfg *config.Config) (burst, sustained *auth.RateLimiter) {
@@ -719,23 +866,45 @@ func newRateLimiters(cfg *config.Config) (burst, sustained *auth.RateLimiter) {
 	return
 }
 
+// buildTokenHandler serves one request using the static bearer-token list from cfg.
+func buildTokenHandler(s *Server, cfg *config.Config, burst, sustained *auth.RateLimiter, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		getIP := func(r *http.Request) string { return extractClientIP(r, cfg.Proxy.TrustedProxy) }
+		entries := make([]auth.TokenEntry, len(cfg.Auth.Tokens))
+		for i, t := range cfg.Auth.Tokens {
+			entries[i] = auth.TokenEntry{Name: t.Name, Value: t.Token, Scopes: t.Scopes}
+		}
+		auth.BearerTokenMiddleware(entries, getIP, burst, sustained)(next).ServeHTTP(w, r)
+	})
+}
+
+// buildAuthenticatorHandler serves one request by delegating auth to the external authenticator.
+func buildAuthenticatorHandler(s *Server, cfg *config.Config, burst, sustained *auth.RateLimiter, verifyCache *auth.VerifyCache, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		getIP := func(r *http.Request) string { return extractClientIP(r, cfg.Proxy.TrustedProxy) }
+		auth.AuthenticatorMiddleware(verifyCache.Verify, "logmcp:read", getIP, burst, sustained)(next).ServeHTTP(w, r)
+	})
+}
+
 // buildHandler wraps the MCP StreamableHTTPServer with the auth middleware.
 // Auth tokens are read on every request so they reflect the latest reloaded config.
 func (s *Server) buildHandler() http.Handler {
 	mux := http.NewServeMux()
 
 	protected := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)
 		s.mu.RLock()
-		entries := make([]auth.TokenEntry, len(s.cfg.Auth.Tokens))
-		for i, t := range s.cfg.Auth.Tokens {
-			entries[i] = auth.TokenEntry{Name: t.Name, Value: t.Token, Scopes: t.Scopes}
-		}
-		trustedProxy := s.cfg.Proxy.TrustedProxy
+		cfg := s.cfg
 		burst := s.burstLimiter
 		sustained := s.sustainedLimiter
+		verifyCache := s.verifyCache
 		s.mu.RUnlock()
-		getIP := func(r *http.Request) string { return extractClientIP(r, trustedProxy) }
-		auth.BearerTokenMiddleware(entries, getIP, burst, sustained)(s.httpSrv).ServeHTTP(w, r)
+
+		if cfg.Auth.Authenticator != nil {
+			buildAuthenticatorHandler(s, cfg, burst, sustained, verifyCache, s.httpSrv).ServeHTTP(w, r)
+			return
+		}
+		buildTokenHandler(s, cfg, burst, sustained, s.httpSrv).ServeHTTP(w, r)
 	})
 
 	s.mu.RLock()
@@ -756,9 +925,21 @@ func (s *Server) Reload(path string) error {
 		return err
 	}
 	s.mu.Lock()
+	oldCmd := ""
+	if s.cfg.Auth.Authenticator != nil {
+		oldCmd = s.cfg.Auth.Authenticator.Command
+	}
 	s.cfg = newCfg
 	s.burstLimiter, s.sustainedLimiter = newRateLimiters(newCfg)
 	s.logMgr.Update(newCfg.Logs.Whitelist, newCfg.Logs.Blacklist, newCfg.Logs.Journald)
+	if newCfg.Auth.Authenticator != nil {
+		newCmd := newCfg.Auth.Authenticator.Command
+		if s.verifyCache == nil || oldCmd != newCmd {
+			s.verifyCache = auth.NewVerifyCache(makeAuthVerifyFunc(newCfg), authVerifyCacheTTL)
+		}
+	} else {
+		s.verifyCache = nil
+	}
 	s.mu.Unlock()
 	fmt.Fprintln(os.Stderr, "logmcp: config reloaded")
 	return nil

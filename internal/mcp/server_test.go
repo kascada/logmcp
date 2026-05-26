@@ -21,7 +21,7 @@ func newTestServer(t *testing.T, whitelist []string) *Server {
 	cfg := config.Default()
 	cfg.Server.TLS.Mode = "off"
 	cfg.Auth.Tokens = []config.TokenConfig{
-		{Name: "test", Token: "test-token", Scopes: []string{"read"}},
+		{Name: "test", Token: "test-token", Scopes: []string{"logmcp:read"}},
 	}
 	cfg.Logs.Whitelist = whitelist
 	cfg.Logs.Blacklist = nil

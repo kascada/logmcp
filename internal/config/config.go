@@ -3,11 +3,17 @@ package config
 import (
 	"fmt"
 	"os"
+	"regexp"
 
 	"gopkg.in/yaml.v3"
 )
 
+var validExtensionName = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
+
 const DefaultConfigPath = "/etc/logmcp/config.yaml"
+const DefaultPort = 7788
+
+var DefaultWhitelist = []string{"/var/log/*"}
 
 // Config is the top-level configuration structure for LogMCP.
 type Config struct {
@@ -53,9 +59,17 @@ type TokenConfig struct {
 	Scopes []string `yaml:"scopes"`
 }
 
+// AuthenticatorConfig configures an external authenticator program.
+// See docs/CLITOOL.md for the verify interface convention.
+type AuthenticatorConfig struct {
+	Command        string `yaml:"command"`
+	TimeoutSeconds int    `yaml:"timeout_seconds,omitempty"`
+}
+
 // AuthConfig holds bearer-token authentication settings.
 type AuthConfig struct {
-	Tokens []TokenConfig `yaml:"tokens"`
+	Tokens        []TokenConfig        `yaml:"tokens,omitempty"`
+	Authenticator *AuthenticatorConfig `yaml:"authenticator,omitempty"`
 }
 
 // Default returns the first token, or nil if none are configured.
@@ -132,17 +146,26 @@ type MacroConfig struct {
 
 // ExtensionsConfig holds optional extension settings.
 type ExtensionsConfig struct {
-	Switchboard SwitchboardConfig `yaml:"switchboard"`
-	Databases   DatabasesConfig   `yaml:"databases"`
-	Macros      MacroConfig       `yaml:"macros"`
+	Clitool   []CltoolExtension `yaml:"clitool"`
+	Databases DatabasesConfig   `yaml:"databases"`
+	Macros    MacroConfig       `yaml:"macros"`
 }
 
-// SwitchboardConfig is the (currently disabled) switchboard extension.
-type SwitchboardConfig struct {
-	Enabled        bool   `yaml:"enabled"`
-	CallsDir       string `yaml:"calls_dir"`
-	SimDir         string `yaml:"sim_dir"`
-	TranscriptsDir string `yaml:"transcripts_dir"`
+// CltoolExtension configures a single clitool-based MCP extension.
+// See docs/CLITOOL.md for the interface convention.
+type CltoolExtension struct {
+	// Name is used as a prefix for all tools exposed by this extension (e.g. "switchboard").
+	// Must match [a-z][a-z0-9_]*.
+	Name string `yaml:"name"`
+	// Command is the full path to the clitool executable.
+	Command string `yaml:"command"`
+	// TimeoutSeconds is the per-call timeout (default: 10).
+	TimeoutSeconds int `yaml:"timeout_seconds,omitempty"`
+	// Mode selects the call transport: "cli" (default) spawns a subprocess per call;
+	// "rpc" uses a Redis-based request/response channel to avoid process-startup overhead.
+	Mode string `yaml:"mode,omitempty"`
+	// RedisAddr is the Redis server address used when Mode is "rpc" (default: "127.0.0.1:6379").
+	RedisAddr string `yaml:"redis_addr,omitempty"`
 }
 
 // DatabasesConfig holds optional database connection configurations.
@@ -164,7 +187,7 @@ func Default() *Config {
 		Name: "",
 		Server: ServerConfig{
 			Host: "0.0.0.0",
-			Port: 7788,
+			Port: DefaultPort,
 			TLS: TLSConfig{
 				Mode: "self-signed",
 				Cert: "/etc/logmcp/server.crt",
@@ -180,7 +203,7 @@ func Default() *Config {
 		},
 		Auth: AuthConfig{},
 		Logs: LogsConfig{
-			Whitelist: []string{"/var/log/*"},
+			Whitelist: DefaultWhitelist,
 			Blacklist: []string{},
 		},
 		Audit: AuditConfig{
@@ -191,11 +214,7 @@ func Default() *Config {
 				Enabled: true,
 			},
 		},
-		Extensions: ExtensionsConfig{
-			Switchboard: SwitchboardConfig{
-				Enabled: false,
-			},
-		},
+		Extensions: ExtensionsConfig{},
 	}
 }
 
@@ -229,13 +248,13 @@ func Load(path string) (*Config, error) {
 		if err := yaml.Unmarshal([]byte(expanded), &legacy); err == nil && legacy.Auth.Token != "" {
 			fmt.Fprintf(os.Stderr, "logmcp: deprecated config format: 'auth.token' should be migrated to 'auth.tokens' list\n")
 			cfg.Auth.Tokens = []TokenConfig{
-				{Name: "default", Token: legacy.Auth.Token, Scopes: []string{"read"}},
+				{Name: "default", Token: legacy.Auth.Token, Scopes: []string{"logmcp:read"}},
 			}
 		}
 	}
 
 	if len(cfg.Logs.Whitelist) == 0 {
-		cfg.Logs.Whitelist = []string{"/var/log/*"}
+		cfg.Logs.Whitelist = DefaultWhitelist
 	}
 
 	if err := validate(cfg); err != nil {
@@ -247,18 +266,24 @@ func Load(path string) (*Config, error) {
 
 // validate checks that required fields are present and values are valid.
 func validate(cfg *Config) error {
-	if len(cfg.Auth.Tokens) == 0 {
-		return fmt.Errorf("auth.tokens must contain at least one token")
-	}
-	for i, t := range cfg.Auth.Tokens {
-		if t.Name == "" {
-			return fmt.Errorf("auth.tokens[%d]: name must not be empty", i)
+	if cfg.Auth.Authenticator != nil {
+		if cfg.Auth.Authenticator.Command == "" {
+			return fmt.Errorf("auth.authenticator.command must not be empty")
 		}
-		if t.Token == "" {
-			return fmt.Errorf("auth.tokens[%d] (%s): token must not be empty", i, t.Name)
+	} else {
+		if len(cfg.Auth.Tokens) == 0 {
+			return fmt.Errorf("auth.tokens must contain at least one token, or auth.authenticator must be configured")
 		}
-		if len(t.Scopes) == 0 {
-			return fmt.Errorf("auth.tokens[%d] (%s): scopes must not be empty", i, t.Name)
+		for i, t := range cfg.Auth.Tokens {
+			if t.Name == "" {
+				return fmt.Errorf("auth.tokens[%d]: name must not be empty", i)
+			}
+			if t.Token == "" {
+				return fmt.Errorf("auth.tokens[%d] (%s): token must not be empty", i, t.Name)
+			}
+			if len(t.Scopes) == 0 {
+				return fmt.Errorf("auth.tokens[%d] (%s): scopes must not be empty", i, t.Name)
+			}
 		}
 	}
 	switch cfg.Server.TLS.Mode {
@@ -266,6 +291,25 @@ func validate(cfg *Config) error {
 		// valid
 	default:
 		return fmt.Errorf("server.tls.mode %q is invalid; expected self-signed, custom, or off", cfg.Server.TLS.Mode)
+	}
+	seenExtNames := make(map[string]bool)
+	for i, ext := range cfg.Extensions.Clitool {
+		if !validExtensionName.MatchString(ext.Name) {
+			return fmt.Errorf("extensions.clitool[%d]: name %q must match [a-z][a-z0-9_]*", i, ext.Name)
+		}
+		if ext.Command == "" {
+			return fmt.Errorf("extensions.clitool[%d] (%s): command must not be empty", i, ext.Name)
+		}
+		if seenExtNames[ext.Name] {
+			return fmt.Errorf("extensions.clitool: duplicate name %q", ext.Name)
+		}
+		seenExtNames[ext.Name] = true
+		switch ext.Mode {
+		case "", "cli", "rpc":
+			// valid
+		default:
+			return fmt.Errorf("extensions.clitool[%d] (%s): mode %q is invalid; expected cli or rpc", i, ext.Name, ext.Mode)
+		}
 	}
 	return nil
 }

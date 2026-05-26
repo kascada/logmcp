@@ -50,11 +50,7 @@ func newServeCmd(docsFS embed.FS) *cobra.Command {
 
 func serve(docsFS embed.FS) error {
 	if _, err := os.Stat(config.DefaultConfigPath); os.IsNotExist(err) {
-		fmt.Fprintf(os.Stderr,
-			"Config file not found at %s.\nRun 'logmcp setup' to create it.\n",
-			config.DefaultConfigPath,
-		)
-		os.Exit(1)
+		return fmt.Errorf("config file not found at %s — run 'logmcp setup' to create it", config.DefaultConfigPath)
 	}
 
 	cfg, err := config.Load(config.DefaultConfigPath)

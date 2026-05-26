@@ -56,7 +56,7 @@ func newTokenAddCmd() *cobra.Command {
 
 			scopes := parseScopes(scopesFlag)
 			if len(scopes) == 0 {
-				scopes = []string{"read"}
+				scopes = []string{"logmcp:read"}
 			}
 
 			cfg, err := loadConfigRaw()
@@ -88,7 +88,7 @@ func newTokenAddCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&name, "name", "", "Token name (required)")
-	cmd.Flags().StringVar(&scopesFlag, "scopes", "read", "Comma-separated scopes (e.g. read,admin)")
+	cmd.Flags().StringVar(&scopesFlag, "scopes", "logmcp:read", "Comma-separated scopes (e.g. logmcp:read,logmcp:admin)")
 	return cmd
 }
 

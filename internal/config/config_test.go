@@ -12,7 +12,7 @@ import (
 func TestValidate(t *testing.T) {
 	valid := &Config{
 		Auth: AuthConfig{Tokens: []TokenConfig{
-			{Name: "t1", Token: "abc", Scopes: []string{"read"}},
+			{Name: "t1", Token: "abc", Scopes: []string{"logmcp:read"}},
 		}},
 		Server: ServerConfig{TLS: TLSConfig{Mode: "self-signed"}},
 	}

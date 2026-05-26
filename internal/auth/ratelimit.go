@@ -40,6 +40,15 @@ func (rl *RateLimiter) Record(ip string) {
 	rl.prune(ip)
 }
 
+// PruneAll removes expired entries for all tracked IPs.
+func (rl *RateLimiter) PruneAll() {
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+	for ip := range rl.failures {
+		rl.prune(ip)
+	}
+}
+
 // prune removes timestamps outside the window for ip. Must be called with mu held.
 func (rl *RateLimiter) prune(ip string) {
 	cutoff := time.Now().Add(-rl.window)

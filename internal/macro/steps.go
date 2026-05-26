@@ -15,6 +15,8 @@ import (
 
 const stepTimeout = 30 * time.Second
 
+const defaultWindowSeconds = 30.0
+
 // stepContext returns a child context with the standard step timeout applied.
 func stepContext(parent context.Context) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(parent, stepTimeout)
@@ -168,7 +170,7 @@ func execJournalctl(ctx context.Context, step StepDef, params map[string]string,
 	if aroundStr, ok := resolvedArgs["around"].(string); ok && aroundStr != "" {
 		aroundTime, err := parseFlexibleTime(aroundStr)
 		if err == nil {
-			windowS := 30.0
+			windowS := defaultWindowSeconds
 			if ws, ok := resolvedArgs["window_s"]; ok {
 				switch v := ws.(type) {
 				case float64:

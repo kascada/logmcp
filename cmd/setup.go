@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -77,126 +78,26 @@ func runSetup(cmd *cobra.Command, args []string) error {
 	}
 
 	// --- Step 1: Deployment mode ---
-	fmt.Println("Deployment mode:")
-	fmt.Println("  1) Direct (logmcp handles TLS)")
-	fmt.Println("  2) Behind reverse proxy (Caddy, nginx, etc.)")
-	defaultMode := "1"
-	if cfg.Proxy.Enabled {
-		defaultMode = "2"
-	}
-	mode := prompt(rl, "Choose [1/2]", defaultMode)
-	behindProxy := mode == "2"
-	directHost := "localhost"
-
-	if behindProxy {
-		cfg.Proxy.Enabled = true
-		cfg.Server.TLS.Mode = "off"
-		cfg.Server.Host = "127.0.0.1"
-
-		useCaddy := promptYN(rl, "Use Caddy as reverse proxy?", cfg.Proxy.Caddy)
-		cfg.Proxy.Caddy = useCaddy
-
-		domain, err := promptDomain(rl, cfg.Proxy.Domain)
-		if err != nil {
-			return err
-		}
-		cfg.Proxy.Domain = domain
-
-		subpath := prompt(rl, "Subpath (leave empty for root, e.g. /logmcp)", cfg.Proxy.PathPrefix)
-		cfg.Proxy.PathPrefix = subpath
-		cfg.Proxy.TrustedProxy = true
-	} else {
-		cfg.Proxy.Enabled = false
-		defaultHost := cfg.Server.TLS.Cert // reuse cert SAN if set, else localhost
-		if defaultHost == "" || defaultHost == "/etc/logmcp/server.crt" {
-			defaultHost = "localhost"
-		}
-		directHost = prompt(rl, "Hostname or IP for TLS certificate SAN", defaultHost)
-
-		fmt.Println("TLS mode:")
-		fmt.Println("  1) Self-signed (auto-generated)")
-		fmt.Println("  2) Custom (provide cert/key paths)")
-		defaultTLSMode := "1"
-		if cfg.Server.TLS.Mode == "custom" {
-			defaultTLSMode = "2"
-		}
-		tlsMode := prompt(rl, "Choose [1/2]", defaultTLSMode)
-
-		if tlsMode == "2" {
-			cfg.Server.TLS.Mode = "custom"
-			cfg.Server.TLS.Cert = prompt(rl, "Path to TLS certificate", cfg.Server.TLS.Cert)
-			cfg.Server.TLS.Key = prompt(rl, "Path to TLS private key", cfg.Server.TLS.Key)
-		} else {
-			cfg.Server.TLS.Mode = "self-signed"
-			cfg.Server.TLS.Cert = "/etc/logmcp/server.crt"
-			cfg.Server.TLS.Key = "/etc/logmcp/server.key"
-		}
-		cfg.Server.Host = "0.0.0.0"
+	behindProxy, directHost, err := setupDeploymentMode(rl, cfg)
+	if err != nil {
+		return err
 	}
 
 	// --- Step 2: Port ---
-	for {
-		portStr := prompt(rl, "Port", fmt.Sprintf("%d", cfg.Server.Port))
-		port := cfg.Server.Port
-		if _, err := fmt.Sscanf(portStr, "%d", &port); err != nil || port < 1 || port > 65535 {
-			fmt.Println("  Ungültige Portnummer.")
-			continue
-		}
-		if ln, err := net.Listen("tcp", fmt.Sprintf(":%d", port)); err != nil {
-			fmt.Printf("  ⚠ Port %d ist bereits belegt: %v\n", port, err)
-			if !promptYN(rl, "Trotzdem verwenden?", false) {
-				continue
-			}
-		} else {
-			ln.Close()
-		}
-		cfg.Server.Port = port
-		break
+	if err := promptPort(rl, cfg); err != nil {
+		return err
 	}
 
 	// --- Step 3: Bearer tokens ---
-	fmt.Println()
-	if len(cfg.Auth.Tokens) > 0 {
-		fmt.Println("Konfigurierte Tokens:")
-		for _, t := range cfg.Auth.Tokens {
-			fmt.Printf("  %-20s  scopes: %s  token: %s\n",
-				t.Name, strings.Join(t.Scopes, ","), maskToken(t.Token))
-		}
-		fmt.Println("  → Tokens verwalten mit: logmcp token list|add|remove|renew")
-	} else {
-		fmt.Println("Bearer token (used by AI clients to authenticate):")
-		name := prompt(rl, "Token name", "default")
-		var tokenVal string
-		if promptYN(rl, "Auto-generate a UUID token?", true) {
-			tokenVal = uuid.NewString()
-			fmt.Printf("Generated token: %s\n", tokenVal)
-		} else {
-			tokenVal = prompt(rl, "Enter bearer token", "")
-		}
-		cfg.Auth.Tokens = []config.TokenConfig{
-			{Name: name, Token: tokenVal, Scopes: []string{"read"}},
-		}
+	if err := setupInitialToken(rl, cfg); err != nil {
+		return err
 	}
 
 	// Whitelist/Blacklist werden nicht interaktiv abgefragt — Defaults aus
 	// config.Default() greifen für neue Installs; bestehende Configs behalten
 	// ihre Werte. Feinjustierung direkt in /etc/logmcp/config.yaml.
 	if len(cfg.Logs.Whitelist) == 0 {
-		cfg.Logs.Whitelist = []string{"/var/log/*"}
-	}
-
-	// --- Step 4: Switchboard extension ---
-	fmt.Println()
-	enableSwitchboard := promptYN(rl, "Enable switchboard extension?", cfg.Extensions.Switchboard.Enabled)
-	if enableSwitchboard {
-		cfg.Extensions.Switchboard.Enabled = true
-		defaultBase := switchboardBase(cfg)
-		base := strings.TrimRight(prompt(rl, "Switchboard base directory", defaultBase), "/")
-		cfg.Extensions.Switchboard.CallsDir = base + "/calls"
-		cfg.Extensions.Switchboard.SimDir = base + "/sim"
-		cfg.Extensions.Switchboard.TranscriptsDir = base + "/transcripts"
-	} else {
-		cfg.Extensions.Switchboard.Enabled = false
+		cfg.Logs.Whitelist = config.DefaultWhitelist
 	}
 
 	// --- Write config ---
@@ -213,6 +114,7 @@ func runSetup(cmd *cobra.Command, args []string) error {
 	if err := os.WriteFile(config.DefaultConfigPath, data, 0o640); err != nil {
 		return fmt.Errorf("writing config to %s: %w", config.DefaultConfigPath, err)
 	}
+	config.BackfillComments(config.DefaultConfigPath)
 	fmt.Printf("Config written to %s\n", config.DefaultConfigPath)
 
 	// --- Generate self-signed cert if needed ---
@@ -261,6 +163,121 @@ func runSetup(cmd *cobra.Command, args []string) error {
 	fmt.Println("Start the server with: sudo logmcp serve")
 	fmt.Println("Or configure client snippets with: logmcp client-config claude-code")
 
+	return nil
+}
+
+// setupDeploymentMode asks whether logmcp runs directly (with TLS) or behind a
+// reverse proxy, and configures cfg accordingly.
+// Returns (behindProxy, directHost, error). directHost is the hostname or IP
+// used as the TLS certificate SAN when running in direct mode; it is empty
+// when behindProxy is true.
+func setupDeploymentMode(rl *readline.Instance, cfg *config.Config) (behindProxy bool, directHost string, err error) {
+	fmt.Println("Deployment mode:")
+	fmt.Println("  1) Direct (logmcp handles TLS)")
+	fmt.Println("  2) Behind reverse proxy (Caddy, nginx, etc.)")
+	defaultMode := "1"
+	if cfg.Proxy.Enabled {
+		defaultMode = "2"
+	}
+	mode := prompt(rl, "Choose [1/2]", defaultMode)
+	behindProxy = mode == "2"
+	directHost = "localhost"
+
+	if behindProxy {
+		cfg.Proxy.Enabled = true
+		cfg.Server.TLS.Mode = "off"
+		cfg.Server.Host = "127.0.0.1"
+
+		cfg.Proxy.Caddy = promptYN(rl, "Use Caddy as reverse proxy?", cfg.Proxy.Caddy)
+
+		domain, domainErr := promptDomain(rl, cfg.Proxy.Domain)
+		if domainErr != nil {
+			return false, "", domainErr
+		}
+		cfg.Proxy.Domain = domain
+
+		cfg.Proxy.PathPrefix = prompt(rl, "Subpath (leave empty for root, e.g. /logmcp)", cfg.Proxy.PathPrefix)
+		cfg.Proxy.TrustedProxy = true
+	} else {
+		cfg.Proxy.Enabled = false
+		defaultHost := cfg.Server.TLS.Cert // reuse cert SAN if set, else localhost
+		if defaultHost == "" || defaultHost == "/etc/logmcp/server.crt" {
+			defaultHost = "localhost"
+		}
+		directHost = prompt(rl, "Hostname or IP for TLS certificate SAN", defaultHost)
+
+		fmt.Println("TLS mode:")
+		fmt.Println("  1) Self-signed (auto-generated)")
+		fmt.Println("  2) Custom (provide cert/key paths)")
+		defaultTLSMode := "1"
+		if cfg.Server.TLS.Mode == "custom" {
+			defaultTLSMode = "2"
+		}
+		tlsMode := prompt(rl, "Choose [1/2]", defaultTLSMode)
+
+		if tlsMode == "2" {
+			cfg.Server.TLS.Mode = "custom"
+			cfg.Server.TLS.Cert = prompt(rl, "Path to TLS certificate", cfg.Server.TLS.Cert)
+			cfg.Server.TLS.Key = prompt(rl, "Path to TLS private key", cfg.Server.TLS.Key)
+		} else {
+			cfg.Server.TLS.Mode = "self-signed"
+			cfg.Server.TLS.Cert = "/etc/logmcp/server.crt"
+			cfg.Server.TLS.Key = "/etc/logmcp/server.key"
+		}
+		cfg.Server.Host = "0.0.0.0"
+	}
+	return behindProxy, directHost, nil
+}
+
+// promptPort asks for a port number, checks availability, and stores the result
+// in cfg.Server.Port. Retries until the user accepts a valid port.
+func promptPort(rl *readline.Instance, cfg *config.Config) error {
+	for {
+		portStr := prompt(rl, "Port", fmt.Sprintf("%d", cfg.Server.Port))
+		port := cfg.Server.Port
+		if _, err := fmt.Sscanf(portStr, "%d", &port); err != nil || port < 1 || port > 65535 {
+			fmt.Println("  Ungültige Portnummer.")
+			continue
+		}
+		if ln, err := net.Listen("tcp", fmt.Sprintf(":%d", port)); err != nil {
+			fmt.Printf("  ⚠ Port %d ist bereits belegt: %v\n", port, err)
+			if !promptYN(rl, "Trotzdem verwenden?", false) {
+				continue
+			}
+		} else {
+			ln.Close()
+		}
+		cfg.Server.Port = port
+		break
+	}
+	return nil
+}
+
+// setupInitialToken either displays the existing tokens with a management hint,
+// or interactively creates the first bearer token and stores it in cfg.
+func setupInitialToken(rl *readline.Instance, cfg *config.Config) error {
+	fmt.Println()
+	if len(cfg.Auth.Tokens) > 0 {
+		fmt.Println("Konfigurierte Tokens:")
+		for _, t := range cfg.Auth.Tokens {
+			fmt.Printf("  %-20s  scopes: %s  token: %s\n",
+				t.Name, strings.Join(t.Scopes, ","), maskToken(t.Token))
+		}
+		fmt.Println("  → Tokens verwalten mit: logmcp token list|add|remove|renew")
+	} else {
+		fmt.Println("Bearer token (used by AI clients to authenticate):")
+		name := prompt(rl, "Token name", "default")
+		var tokenVal string
+		if promptYN(rl, "Auto-generate a UUID token?", true) {
+			tokenVal = uuid.NewString()
+			fmt.Printf("Generated token: %s\n", tokenVal)
+		} else {
+			tokenVal = prompt(rl, "Enter bearer token", "")
+		}
+		cfg.Auth.Tokens = []config.TokenConfig{
+			{Name: name, Token: tokenVal, Scopes: []string{"logmcp:read"}},
+		}
+	}
 	return nil
 }
 
@@ -466,15 +483,6 @@ func setupSystemd(rl *readline.Instance) {
 	fmt.Println("✓ Service installiert und gestartet.")
 }
 
-// switchboardBase derives the base directory from existing config, or returns
-// the default /var/log/switchboard/.
-func switchboardBase(cfg *config.Config) string {
-	if d := cfg.Extensions.Switchboard.CallsDir; d != "" {
-		return strings.TrimSuffix(d, "/calls")
-	}
-	return "/var/log/switchboard"
-}
-
 // groupExists returns true if the named group exists on the system.
 func groupExists(name string) bool {
 	return exec.Command("getent", "group", name).Run() == nil
@@ -486,12 +494,7 @@ func inGroup(user, group string) bool {
 	if err != nil {
 		return false
 	}
-	for _, g := range strings.Fields(string(out)) {
-		if g == group {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(strings.Fields(string(out)), group)
 }
 
 // promptDomain asks for a domain name, strips scheme/path, and validates.
@@ -611,6 +614,7 @@ func promptYN(rl *readline.Instance, question string, defaultYes bool) bool {
 }
 
 // printCertFingerprint reads the PEM cert and prints its SHA256 fingerprint.
+// Best-effort: silently skip on any read/parse error.
 func printCertFingerprint(certPath string) {
 	data, err := os.ReadFile(certPath)
 	if err != nil {

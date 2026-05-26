@@ -4,12 +4,25 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
+	"time"
 
 	"github.com/kleist-dev/logmcp/internal/config"
 	"github.com/kleist-dev/logmcp/internal/logs"
 	"github.com/spf13/cobra"
 )
+
+// parseTimeFlag parses a named CLI flag value as a time or duration.
+// It returns nil, nil when value is empty (flag was not set).
+func parseTimeFlag(name, value string) (*time.Time, error) {
+	if value == "" {
+		return nil, nil
+	}
+	t, err := logs.ParseTimeOrDuration(value)
+	if err != nil {
+		return nil, fmt.Errorf("invalid --%s value: %w", name, err)
+	}
+	return &t, nil
+}
 
 func newLogsCmd() *cobra.Command {
 	logsCmd := &cobra.Command{
@@ -86,8 +99,7 @@ func newLogsReadCmd() *cobra.Command {
 				return err
 			}
 			if !mgr.IsAllowed(path) {
-				fmt.Fprintf(os.Stderr, "Access denied: %s is not in the whitelist.\n", path)
-				os.Exit(1)
+				return fmt.Errorf("access denied: %s is not in the whitelist", path)
 			}
 
 			opts := logs.ReadOptions{
@@ -95,19 +107,13 @@ func newLogsReadCmd() *cobra.Command {
 				Tail:   tail,
 				Offset: offset,
 			}
-			if since != "" {
-				t, err := logs.ParseTimeOrDuration(since)
-				if err != nil {
-					return fmt.Errorf("invalid --since: %w", err)
-				}
-				opts.Since = &t
+			opts.Since, err = parseTimeFlag("since", since)
+			if err != nil {
+				return err
 			}
-			if until != "" {
-				t, err := logs.ParseTimeOrDuration(until)
-				if err != nil {
-					return fmt.Errorf("invalid --until: %w", err)
-				}
-				opts.Until = &t
+			opts.Until, err = parseTimeFlag("until", until)
+			if err != nil {
+				return err
 			}
 
 			result, err := mgr.ReadFile(context.Background(), path, opts)
@@ -154,8 +160,7 @@ func newLogsSearchCmd() *cobra.Command {
 				return err
 			}
 			if !mgr.IsAllowed(path) {
-				fmt.Fprintf(os.Stderr, "Access denied: %s is not in the whitelist.\n", path)
-				os.Exit(1)
+				return fmt.Errorf("access denied: %s is not in the whitelist", path)
 			}
 
 			opts := logs.SearchOptions{
@@ -163,19 +168,13 @@ func newLogsSearchCmd() *cobra.Command {
 				MaxResults:   maxResults,
 				ContextLines: contextLines,
 			}
-			if since != "" {
-				t, err := logs.ParseTimeOrDuration(since)
-				if err != nil {
-					return fmt.Errorf("invalid --since: %w", err)
-				}
-				opts.Since = &t
+			opts.Since, err = parseTimeFlag("since", since)
+			if err != nil {
+				return err
 			}
-			if until != "" {
-				t, err := logs.ParseTimeOrDuration(until)
-				if err != nil {
-					return fmt.Errorf("invalid --until: %w", err)
-				}
-				opts.Until = &t
+			opts.Until, err = parseTimeFlag("until", until)
+			if err != nil {
+				return err
 			}
 
 			matches, err := mgr.SearchFile(context.Background(), path, opts)
@@ -222,8 +221,7 @@ func newLogsInfoCmd() *cobra.Command {
 				return err
 			}
 			if !mgr.IsAllowed(path) {
-				fmt.Fprintf(os.Stderr, "Access denied: %s is not in the whitelist.\n", path)
-				os.Exit(1)
+				return fmt.Errorf("access denied: %s is not in the whitelist", path)
 			}
 
 			fi, err := mgr.FileInfo(path)

@@ -20,7 +20,8 @@ type StepDef struct {
 	// Internal is the name of an internal step type (db_query, read_file, journalctl).
 	Internal string `yaml:"internal"`
 	// ID is the unique identifier for this step; used as key in the result object.
-	ID   string                 `yaml:"id"`
+	ID string `yaml:"id"`
+	// Args holds step-specific parameters as parsed from YAML; concrete types depend on the step kind.
 	Args map[string]any `yaml:"args"`
 }
 

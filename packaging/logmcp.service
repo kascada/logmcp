@@ -19,6 +19,7 @@ ReadOnlyPaths=/var/log
 RestrictNamespaces=yes
 LockPersonality=yes
 RestrictSUIDSGID=yes
+MemoryDenyWriteExecute=yes
 RemoveIPC=yes
 SystemCallFilter=@system-service
 SystemCallErrorNumber=EPERM

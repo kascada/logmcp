@@ -168,6 +168,46 @@ These are the tools LogMCP exposes to AI assistants:
 
 Extensions may add further tools (e.g. `switchboard_debug` for the Switchboard extension).
 
+## Extensions — Wrapping External Tools as MCP
+
+LogMCP can expose any external program or service as additional MCP tools — no custom MCP server required. The AI sees them alongside the built-in log tools.
+
+### CLI extension
+
+Any program that implements the [`clitool` interface](docs/CLITOOL.md) (`list` / `call` subcommands) can be registered. LogMCP calls `<command> list` at startup to discover tools, and forwards each tool call to `<command> call <tool> --token-stdin`.
+
+```yaml
+extensions:
+  clitool:
+    - name: myapp
+      command: /usr/local/bin/myapp-ctl
+      timeout_seconds: 10
+```
+
+This spawns a subprocess per call — suitable for any program on the same or a remote host.
+
+### RPC extension (Redis)
+
+For programs running on the same host, the RPC variant avoids the per-call process-startup overhead (relevant for Python programs where interpreter startup and imports add noticeable latency). Instead of spawning a subprocess, LogMCP pushes a request onto a Redis list and waits for the worker's reply.
+
+```yaml
+extensions:
+  clitool:
+    - name: myapp
+      command: /usr/local/bin/myapp-ctl   # still used for `list` at startup
+      mode: rpc
+      redis_addr: "127.0.0.1:6379"
+      timeout_seconds: 5
+```
+
+The worker reads from `sb:rpc:req` and pushes its reply to `sb:rpc:reply:<uuid>`. See [docs/RPC.md](docs/RPC.md) for the full protocol.
+
+### Auth flow
+
+The bearer token from each incoming MCP request is forwarded to the extension — either via stdin (CLI mode) or as `caller` metadata in the RPC envelope. The extension can verify it or trust the pre-resolved identity.
+
+---
+
 ## Case Studies
 
 Real-world scenarios where LogMCP makes the difference — see [docs/case-studies.md](docs/case-studies.md):

@@ -56,15 +56,17 @@ func runServiceInstall(cmd *cobra.Command, args []string) error {
 	fmt.Printf("Unit file written to %s\n", systemdUnitPath)
 
 	run("systemctl", "daemon-reload")
-	run("systemctl", "enable", "logmcp")
+	enabled := run("systemctl", "enable", "logmcp")
 	startOut, startErr := exec.Command("systemctl", "start", "logmcp").CombinedOutput()
 	if len(startOut) > 0 {
 		fmt.Print(string(startOut))
 	}
 	if startErr != nil {
 		fmt.Fprintln(os.Stderr, "Warning: service failed to start. Check: journalctl -u logmcp -n 50")
-	} else {
+	} else if enabled {
 		fmt.Println("Service enabled and started.")
+	} else {
+		fmt.Println("Service started (not enabled for auto-start — check the warning above).")
 	}
 	return nil
 }
@@ -79,8 +81,7 @@ func newServiceRemoveCmd() *cobra.Command {
 
 func runServiceRemove(cmd *cobra.Command, args []string) error {
 	if os.Getuid() != 0 {
-		fmt.Fprintln(os.Stderr, "This command requires root. Run with sudo.")
-		os.Exit(1)
+		return fmt.Errorf("this command requires root — run with sudo")
 	}
 
 	run("systemctl", "stop", "logmcp")
@@ -157,15 +158,17 @@ func printCaddySnippet(cfg *config.Config) {
 	fmt.Println("Note: Caddy will automatically obtain and renew a TLS certificate via Let's Encrypt.")
 }
 
-// run executes a command and prints its output. Ignores errors (best-effort).
-func run(name string, args ...string) {
+// run executes a command and prints its output. Returns false on error (best-effort).
+func run(name string, args ...string) bool {
 	out, err := exec.Command(name, args...).CombinedOutput()
 	if len(out) > 0 {
 		fmt.Print(string(out))
 	}
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: %s %v: %v\n", name, args, err)
+		return false
 	}
+	return true
 }
 
 // writeSystemdUnit writes the unit file (used from setup.go).

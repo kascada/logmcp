@@ -3,6 +3,7 @@ package logs
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -76,6 +77,15 @@ func TestIsAllowed_Journald(t *testing.T) {
 	if m2.IsAllowed(JournaldPrefix) {
 		t.Error("journald:// should not be allowed when journald=false")
 	}
+
+	// Blacklist must block specific journald units even when journald=true.
+	m3 := NewManager(nil, []string{"journald://sshd.service"}, true)
+	if m3.IsAllowed("journald://sshd.service") {
+		t.Error("journald://sshd.service should be blocked by blacklist")
+	}
+	if !m3.IsAllowed("journald://myapp.service") {
+		t.Error("journald://myapp.service should remain allowed")
+	}
 }
 
 // --- ParseTimeOrDuration ---
@@ -116,6 +126,76 @@ func TestParseTimeOrDuration(t *testing.T) {
 		}
 	})
 }
+
+// --- safeOpenFile ---
+
+func TestSafeOpenFile_SymlinkOutsideWhitelist(t *testing.T) {
+	// Target file lives outside the whitelisted directory.
+	outsideDir := t.TempDir()
+	target := filepath.Join(outsideDir, "secret.txt")
+	if err := os.WriteFile(target, []byte("secret\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Whitelisted directory contains only a symlink pointing outside.
+	insideDir := t.TempDir()
+	link := filepath.Join(insideDir, "app.log")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+
+	whitelist := []string{insideDir + "/*"}
+	blacklist := []string{}
+
+	f, err := safeOpenFile(link, whitelist, blacklist)
+	if err == nil {
+		f.Close()
+		t.Fatal("expected access denied, got nil error")
+	}
+	if !strings.Contains(err.Error(), "access denied") {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestSafeOpenFile_SymlinkInsideWhitelist(t *testing.T) {
+	// Both symlink and target live inside the whitelisted directory.
+	dir := t.TempDir()
+	target := filepath.Join(dir, "real.log")
+	if err := os.WriteFile(target, []byte("hello\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, "app.log")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+
+	whitelist := []string{dir + "/*"}
+	blacklist := []string{}
+
+	f, err := safeOpenFile(link, whitelist, blacklist)
+	if err != nil {
+		t.Fatalf("expected success for symlink within whitelist, got: %v", err)
+	}
+	f.Close()
+}
+
+func TestSafeOpenFile_PlainFileInsideWhitelist(t *testing.T) {
+	dir := t.TempDir()
+	file := filepath.Join(dir, "app.log")
+	if err := os.WriteFile(file, []byte("line1\nline2\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	whitelist := []string{dir + "/*"}
+	blacklist := []string{}
+
+	f, err := safeOpenFile(file, whitelist, blacklist)
+	if err != nil {
+		t.Fatalf("expected success for plain file in whitelist, got: %v", err)
+	}
+	f.Close()
+}
+
 
 // --- parseLineTimestamp ---
 
@@ -163,32 +243,3 @@ func TestParseLineTimestamp(t *testing.T) {
 	})
 }
 
-// --- filterByTime ---
-
-func TestFilterByTime(t *testing.T) {
-	since := time.Date(2024, 1, 15, 10, 0, 0, 0, time.Local)
-	until := time.Date(2024, 1, 15, 11, 0, 0, 0, time.Local)
-
-	lines := []string{
-		"2024-01-15 09:59:59 too early",
-		"2024-01-15 10:30:00 in range",
-		"2024-01-15 11:00:01 too late",
-		"no timestamp here — must be included",
-	}
-
-	got := filterByTime(lines, &since, &until)
-
-	want := []string{
-		"2024-01-15 10:30:00 in range",
-		"no timestamp here — must be included",
-	}
-
-	if len(got) != len(want) {
-		t.Fatalf("got %d lines, want %d: %v", len(got), len(want), got)
-	}
-	for i := range want {
-		if got[i] != want[i] {
-			t.Errorf("line[%d] = %q, want %q", i, got[i], want[i])
-		}
-	}
-}

@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -11,6 +12,7 @@ import (
 )
 
 func newClientConfigCmd() *cobra.Command {
+	var showAll bool
 	ccCmd := &cobra.Command{
 		Use:   "client-config [claude-code|vscode]",
 		Short: "Print MCP client configuration snippets",
@@ -20,17 +22,19 @@ func newClientConfigCmd() *cobra.Command {
 				return err
 			}
 			url := deriveURL(cfg)
-			printClaudeCodeConfig(cfg, url)
+			showAll = resolveShowAll(cfg, showAll)
+			printClaudeCodeConfig(cfg, url, showAll)
 			return nil
 		},
 	}
-	ccCmd.AddCommand(newClientConfigSubCmd("claude-code", printClaudeCodeConfig))
-	ccCmd.AddCommand(newClientConfigSubCmd("vscode", printVSCodeConfig))
-	ccCmd.AddCommand(newClientConfigSubCmd("claude-desktop", printClaudeDesktopConfig))
+	ccCmd.PersistentFlags().BoolVar(&showAll, "all", false, "Show configuration for all tokens")
+	ccCmd.AddCommand(newClientConfigSubCmd("claude-code", printClaudeCodeConfig, &showAll))
+	ccCmd.AddCommand(newClientConfigSubCmd("vscode", printVSCodeConfig, &showAll))
+	ccCmd.AddCommand(newClientConfigSubCmd("claude-desktop", printClaudeDesktopConfig, &showAll))
 	return ccCmd
 }
 
-func newClientConfigSubCmd(name string, fn func(*config.Config, string)) *cobra.Command {
+func newClientConfigSubCmd(name string, fn func(*config.Config, string, bool), showAll *bool) *cobra.Command {
 	return &cobra.Command{
 		Use:   name,
 		Short: fmt.Sprintf("Print %s MCP configuration snippet", name),
@@ -40,16 +44,28 @@ func newClientConfigSubCmd(name string, fn func(*config.Config, string)) *cobra.
 				return err
 			}
 			url := deriveURL(cfg)
-			fn(cfg, url)
+			fn(cfg, url, resolveShowAll(cfg, *showAll))
 			return nil
 		},
 	}
 }
 
+func resolveShowAll(cfg *config.Config, showAll bool) bool {
+	if showAll || len(cfg.Auth.Tokens) <= 1 {
+		return showAll
+	}
+	return promptShowAll()
+}
+
+// hasPlaceholderToken returns true when visibleTokens will show a synthetic placeholder.
+func hasPlaceholderToken(cfg *config.Config) bool {
+	return len(cfg.Auth.Tokens) == 0
+}
+
 func loadConfigForClient() (*config.Config, error) {
 	cfg, err := config.Load(config.DefaultConfigPath)
 	if err != nil {
-		return nil, fmt.Errorf("loading config: %w", err)
+		return config.Default(), nil
 	}
 	return cfg, nil
 }
@@ -89,16 +105,12 @@ type mcpEntry struct {
 	Headers map[string]string `json:"headers"`
 }
 
-func buildEntry(cfg *config.Config, url string) mcpEntry {
-	token := ""
-	if t := cfg.Auth.Default(); t != nil {
-		token = t.Token
-	}
+func buildEntry(url string, tokenVal string) mcpEntry {
 	return mcpEntry{
 		Type: "http",
 		URL:  url,
 		Headers: map[string]string{
-			"Authorization": "Bearer " + token,
+			"Authorization": "Bearer " + tokenVal,
 		},
 	}
 }
@@ -113,53 +125,100 @@ func serverName(cfg *config.Config) string {
 	return "logmcp"
 }
 
-func printClaudeCodeConfig(cfg *config.Config, url string) {
-	name := serverName(cfg)
-	token := ""
-	if t := cfg.Auth.Default(); t != nil {
-		token = t.Token
+// mcpEntryName returns the Claude Code MCP server name for a token.
+// The default token uses the bare server name; all others get a "-<tokenname>" suffix.
+func mcpEntryName(srv string, t config.TokenConfig) string {
+	if t.Name == "default" {
+		return srv
 	}
+	return srv + "-" + t.Name
+}
+
+// tokenDisplayValue returns the token value to print.
+// Tokens named "dummy" are shown as a placeholder.
+func tokenDisplayValue(t config.TokenConfig) string {
+	if t.Name == "dummy" {
+		return "<DEIN-TOKEN>"
+	}
+	return t.Token
+}
+
+// visibleTokens returns the slice of tokens to display.
+// When no static tokens are configured (authenticator mode), a placeholder is returned.
+func visibleTokens(cfg *config.Config, showAll bool) []config.TokenConfig {
+	if len(cfg.Auth.Tokens) == 0 {
+		return []config.TokenConfig{{Name: "default", Token: "<TOKEN>"}}
+	}
+	if showAll {
+		return cfg.Auth.Tokens
+	}
+	return cfg.Auth.Tokens[:1]
+}
+
+func printClaudeCodeConfig(cfg *config.Config, url string, showAll bool) {
+	name := serverName(cfg)
+	tokens := visibleTokens(cfg, showAll)
 
 	fmt.Println("=== Claude Code ===")
 	fmt.Println()
+	if hasPlaceholderToken(cfg) {
+		fmt.Println("Hinweis: <TOKEN> durch das Bearer-Token aus deiner Auth-Quelle ersetzen.")
+		fmt.Println()
+	}
 	fmt.Println("Registrieren:")
-	fmt.Printf("  claude mcp add --transport http %s %s \\\n", name, url)
-	fmt.Printf("    --header \"Authorization: Bearer %s\"\n", token)
-	fmt.Println()
+
+	for _, t := range tokens {
+		fmt.Printf("  claude mcp add --transport http %s %s \\\n", mcpEntryName(name, t), url)
+		fmt.Printf("    --header \"Authorization: Bearer %s\"\n", tokenDisplayValue(t))
+		fmt.Println()
+	}
+
 	fmt.Println("  Tipp: Diesen Befehl im Projektverzeichnis ausführen, in dem der Server gelten soll.")
 	fmt.Println("        Claude Code speichert die Konfiguration projektbezogen in .claude/settings.json.")
 	fmt.Println("        Für globale Registrierung: --scope user anhängen.")
 	fmt.Println()
 	fmt.Println("Entfernen:")
-	fmt.Printf("  claude mcp remove %s\n", name)
+	for _, t := range tokens {
+		fmt.Printf("  claude mcp remove %s\n", mcpEntryName(name, t))
+	}
 	printTLSNote(cfg)
 }
 
-func printVSCodeConfig(cfg *config.Config, url string) {
-	entry := buildEntry(cfg, url)
-	data, _ := json.MarshalIndent(entry, "    ", "  ")
+func printVSCodeConfig(cfg *config.Config, url string, showAll bool) {
+	tokens := visibleTokens(cfg, showAll)
 	name := serverName(cfg)
 
 	fmt.Println("=== VS Code (.vscode/settings.json oder User-Settings → mcp.servers) ===")
 	fmt.Println()
+	if hasPlaceholderToken(cfg) {
+		fmt.Println("Hinweis: <TOKEN> durch das Bearer-Token aus deiner Auth-Quelle ersetzen.")
+		fmt.Println()
+	}
 	fmt.Println(`Eintragen unter "mcp":`)
 	fmt.Println()
+
+	entries := make(map[string]json.RawMessage, len(tokens))
+	for _, t := range tokens {
+		data, _ := json.MarshalIndent(buildEntry(url, tokenDisplayValue(t)), "      ", "  ")
+		entries[mcpEntryName(name, t)] = data
+	}
+	serversJSON, _ := json.MarshalIndent(entries, "    ", "  ")
+
 	fmt.Println(`{`)
 	fmt.Println(`  "mcp": {`)
-	fmt.Println(`    "servers": {`)
-	fmt.Printf(`      "%s": %s`, name, string(data))
+	fmt.Printf(`    "servers": %s`, string(serversJSON))
 	fmt.Println()
-	fmt.Println(`    }`)
 	fmt.Println(`  }`)
 	fmt.Println(`}`)
 	fmt.Println()
-	fmt.Printf("Entfernen: Eintrag \"%s\" aus den Settings löschen.\n", name)
+
+	fmt.Println("Entfernen: Entsprechende Einträge aus den Settings löschen.")
 	fmt.Println()
-	fmt.Println("# ACHTUNG: Dieses Token ist sensitiv — nicht in öffentliche Repos einchecken")
+	fmt.Println("# ACHTUNG: Tokens sind sensitiv — nicht in öffentliche Repos einchecken")
 	printTLSNote(cfg)
 }
 
-func printClaudeDesktopConfig(cfg *config.Config, url string) {
+func printClaudeDesktopConfig(cfg *config.Config, url string, showAll bool) {
 	fmt.Println("=== Claude Desktop ===")
 	fmt.Println()
 	fmt.Println("Claude Desktop supports only OAuth-based MCP connections.")
@@ -175,4 +234,17 @@ func printTLSNote(cfg *config.Config) {
 		fmt.Println("Your AI client may need to be configured to trust it.")
 		fmt.Println("Run 'logmcp check' to display the certificate fingerprint.")
 	}
+}
+
+func promptShowAll() bool {
+	stat, err := os.Stdin.Stat()
+	if err != nil || (stat.Mode()&os.ModeCharDevice) == 0 {
+		return false
+	}
+	fmt.Fprint(os.Stderr, "Für alle Token anzeigen? [j/N] ")
+	scanner := bufio.NewScanner(os.Stdin)
+	if scanner.Scan() {
+		return strings.EqualFold(strings.TrimSpace(scanner.Text()), "j")
+	}
+	return false
 }

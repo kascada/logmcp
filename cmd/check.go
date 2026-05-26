@@ -19,17 +19,18 @@ func newCheckCmd() *cobra.Command {
 }
 
 func runCheck(cmd *cobra.Command, args []string) error {
+	if os.Getuid() == 0 {
+		fmt.Println("WARNING: running as root — permission checks may not reflect actual service behaviour.")
+		fmt.Println("         Run as the service user for accurate results: sudo su -s /bin/sh logmcp -c 'logmcp check'")
+		fmt.Println()
+	}
 	if _, err := os.Stat(config.DefaultConfigPath); err != nil {
-		fmt.Printf("  ✗  Config file exists — %s\n\n", config.DefaultConfigPath)
-		fmt.Println("Cannot proceed without a config file. Run: logmcp setup")
-		os.Exit(1)
+		return fmt.Errorf("config file not found at %s — run: logmcp setup", config.DefaultConfigPath)
 	}
 
 	cfg, err := config.Load(config.DefaultConfigPath)
 	if err != nil {
-		fmt.Printf("  ✗  Config is valid YAML — %s\n\n", err.Error())
-		fmt.Println("Fix config errors before continuing.")
-		os.Exit(1)
+		return fmt.Errorf("config is not valid YAML: %w", err)
 	}
 
 	result := check.Run(cfg, check.Options{
@@ -56,7 +57,5 @@ func runCheck(cmd *cobra.Command, args []string) error {
 		fmt.Println("All checks passed.")
 		return nil
 	}
-	fmt.Println("One or more checks failed.")
-	os.Exit(1)
-	return nil
+	return fmt.Errorf("one or more checks failed")
 }

@@ -124,7 +124,16 @@ func (m *Manager) IsAllowed(path string) bool {
 	m.mu.RUnlock()
 
 	if IsJournaldPath(path) {
-		return journald
+		if !journald {
+			return false
+		}
+		// Blacklist applies to journald paths too — allows blocking specific units.
+		for _, pattern := range blacklist {
+			if matchGlob(pattern, path) {
+				return false
+			}
+		}
+		return true
 	}
 
 	path = cleanPath(path)
@@ -184,7 +193,8 @@ func matchGlob(pattern, path string) bool {
 }
 
 // checkACL checks whitelist/blacklist access against the given slices.
-// Caller must hold m.mu to ensure the slices are stable.
+// The slices must be stable for the duration of the call — callers that read
+// from a Manager should copy them under the appropriate lock before calling.
 func checkACL(path string, whitelist, blacklist []string) bool {
 	for _, pattern := range blacklist {
 		if matchGlob(pattern, path) {
@@ -197,6 +207,32 @@ func checkACL(path string, whitelist, blacklist []string) bool {
 		}
 	}
 	return false
+}
+
+// safeOpenFile opens path and verifies, via /proc/self/fd/<n>, that the
+// file descriptor actually points to a path that is still within the whitelist.
+// This closes the TOCTOU window between the initial IsAllowed/cleanPath check
+// and the os.Open call: if an attacker replaces the file with a symlink to a
+// path outside the whitelist in that window, the fd-based re-check catches it.
+//
+// whitelist and blacklist must be stable snapshot copies — the function runs
+// without holding any Manager lock.
+func safeOpenFile(path string, whitelist, blacklist []string) (*os.File, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	fdPath := fmt.Sprintf("/proc/self/fd/%d", f.Fd())
+	realPath, err := os.Readlink(fdPath)
+	if err != nil {
+		f.Close()
+		return nil, fmt.Errorf("resolving fd path: %w", err)
+	}
+	if !checkACL(realPath, whitelist, blacklist) {
+		f.Close()
+		return nil, fmt.Errorf("access denied: path changed after whitelist check")
+	}
+	return f, nil
 }
 
 // ListAccessible returns FileInfo for all accessible files matching the whitelist.
@@ -255,7 +291,10 @@ func (m *Manager) ListAccessible() ([]FileInfo, error) {
 				continue
 			}
 
-			info, err := m.FileInfo(path)
+			// Use fileInfoWithACL directly — we already hold m.mu (write lock)
+			// and have m.whitelist/m.blacklist stable. Calling FileInfo would
+			// attempt to acquire m.mu.RLock(), causing a deadlock.
+			info, err := m.fileInfoWithACL(path, m.whitelist, m.blacklist)
 			if err != nil {
 				results = append(results, FileInfo{Path: path, Readable: false})
 				continue
@@ -280,9 +319,31 @@ func (m *Manager) JournaldInfo() FileInfo {
 	}
 }
 
-// FileInfo returns metadata for a single file.
-func (m *Manager) FileInfo(path string) (FileInfo, error) {
+// snapshotACL copies whitelist and blacklist under a read lock and returns
+// the copies. safeOpenFile must be called with these copies, not with the
+// Manager's live slices, because it runs without any lock held.
+func (m *Manager) snapshotACL() (whitelist, blacklist []string) {
+	m.mu.RLock()
+	whitelist = make([]string, len(m.whitelist))
+	copy(whitelist, m.whitelist)
+	blacklist = make([]string, len(m.blacklist))
+	copy(blacklist, m.blacklist)
+	m.mu.RUnlock()
+	return
+}
+
+// fileInfoWithACL returns metadata for a single file using already-copied
+// whitelist/blacklist slices. It does NOT acquire any Manager lock — callers
+// must supply stable snapshot copies (or hold the appropriate lock).
+//
+// Metadata (size, mtime) is obtained via os.Stat before the open so that a
+// partial FileInfo{Readable: false} can be returned when the file exists but
+// cannot be opened or fails the post-open ACL check. This preserves the
+// original contract: callers receive a non-error result with Readable=false
+// rather than an error when the file is visible but unreadable.
+func (m *Manager) fileInfoWithACL(path string, whitelist, blacklist []string) (FileInfo, error) {
 	path = cleanPath(path)
+
 	stat, err := os.Stat(path)
 	if err != nil {
 		return FileInfo{}, fmt.Errorf("stat %q: %w", path, err)
@@ -298,11 +359,12 @@ func (m *Manager) FileInfo(path string) (FileInfo, error) {
 		Readable:     false,
 	}
 
-	f, err := os.Open(path)
+	f, err := safeOpenFile(path, whitelist, blacklist)
 	if err != nil {
 		return fi, nil
 	}
 	defer f.Close()
+
 	fi.Readable = true
 
 	// Count lines.
@@ -317,10 +379,17 @@ func (m *Manager) FileInfo(path string) (FileInfo, error) {
 	return fi, nil
 }
 
+// FileInfo returns metadata for a single file.
+func (m *Manager) FileInfo(path string) (FileInfo, error) {
+	whitelist, blacklist := m.snapshotACL()
+	return m.fileInfoWithACL(path, whitelist, blacklist)
+}
+
 // ReadFile reads lines from the given file according to opts.
 func (m *Manager) ReadFile(ctx context.Context, path string, opts ReadOptions) ([]string, error) {
 	path = cleanPath(path)
-	f, err := os.Open(path)
+	whitelist, blacklist := m.snapshotACL()
+	f, err := safeOpenFile(path, whitelist, blacklist)
 	if err != nil {
 		return nil, fmt.Errorf("opening %q: %w", path, err)
 	}
@@ -406,24 +475,13 @@ func (m *Manager) ReadFile(ctx context.Context, path string, opts ReadOptions) (
 	return lines, nil
 }
 
-// SearchFile searches the file for lines matching opts.Pattern.
-func (m *Manager) SearchFile(ctx context.Context, path string, opts SearchOptions) ([]Match, error) {
-	path = cleanPath(path)
-	if opts.Pattern == "" {
-		return nil, fmt.Errorf("search pattern must not be empty")
-	}
-
-	re, err := regexp.Compile(opts.Pattern)
-	if err != nil {
-		return nil, fmt.Errorf("invalid pattern %q: %w", opts.Pattern, err)
-	}
-
-	f, err := os.Open(path)
-	if err != nil {
-		return nil, fmt.Errorf("opening %q: %w", path, err)
-	}
-	defer f.Close()
-
+// collectMatches scans lines from scanner, collecting lines that match re
+// according to opts (MaxResults, ContextLines). lineFilter, if non-nil, is
+// called for every line before the match check; returning false causes the
+// line to be treated as before-context only and skipped for matching (used by
+// SearchFile for timestamp-based filtering). Pass nil when the source already
+// handles time filtering externally (e.g. journalctl --since/--until).
+func collectMatches(scanner *bufio.Scanner, re *regexp.Regexp, opts SearchOptions, lineFilter func(string) bool) []Match {
 	maxResults := opts.MaxResults
 	if maxResults <= 0 {
 		maxResults = 200
@@ -432,10 +490,6 @@ func (m *Manager) SearchFile(ctx context.Context, path string, opts SearchOption
 	k := opts.ContextLines
 	// Rolling deque for before-context: fixed capacity k.
 	var beforeDeque []string
-
-	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, scannerBufSize), scannerBufSize)
-
 	var results []Match
 	lineNum := 0
 	afterPending := 0
@@ -444,29 +498,16 @@ func (m *Manager) SearchFile(ctx context.Context, path string, opts SearchOption
 		line := scanner.Text()
 		lineNum++
 
-		// Time filter.
-		if opts.Since != nil || opts.Until != nil {
-			ts, ok := parseLineTimestamp(line)
-			if ok {
-				if opts.Since != nil && ts.Before(*opts.Since) {
-					if k > 0 {
-						if len(beforeDeque) >= k {
-							beforeDeque = beforeDeque[1:]
-						}
-						beforeDeque = append(beforeDeque, line)
-					}
-					continue
+		// Optional per-line filter (e.g. timestamp range for file sources).
+		if lineFilter != nil && !lineFilter(line) {
+			// Line is out of range — advance before-deque but skip matching.
+			if k > 0 {
+				if len(beforeDeque) >= k {
+					beforeDeque = beforeDeque[1:]
 				}
-				if opts.Until != nil && ts.After(*opts.Until) {
-					if k > 0 {
-						if len(beforeDeque) >= k {
-							beforeDeque = beforeDeque[1:]
-						}
-						beforeDeque = append(beforeDeque, line)
-					}
-					continue
-				}
+				beforeDeque = append(beforeDeque, line)
 			}
+			continue
 		}
 
 		// Feed after-context of the last open match.
@@ -508,33 +549,57 @@ func (m *Manager) SearchFile(ctx context.Context, path string, opts SearchOption
 			break
 		}
 	}
+
+	return results
+}
+
+// SearchFile searches the file for lines matching opts.Pattern.
+func (m *Manager) SearchFile(ctx context.Context, path string, opts SearchOptions) ([]Match, error) {
+	path = cleanPath(path)
+	if opts.Pattern == "" {
+		return nil, fmt.Errorf("search pattern must not be empty")
+	}
+
+	re, err := regexp.Compile(opts.Pattern)
+	if err != nil {
+		return nil, fmt.Errorf("invalid pattern %q: %w", opts.Pattern, err)
+	}
+
+	whitelist, blacklist := m.snapshotACL()
+	f, err := safeOpenFile(path, whitelist, blacklist)
+	if err != nil {
+		return nil, fmt.Errorf("opening %q: %w", path, err)
+	}
+	defer f.Close()
+
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, scannerBufSize), scannerBufSize)
+
+	// Build a timestamp filter when Since/Until are set.
+	var lineFilter func(string) bool
+	if opts.Since != nil || opts.Until != nil {
+		since, until := opts.Since, opts.Until
+		lineFilter = func(line string) bool {
+			ts, ok := parseLineTimestamp(line)
+			if !ok {
+				return true // no timestamp → do not filter out
+			}
+			if since != nil && ts.Before(*since) {
+				return false
+			}
+			if until != nil && ts.After(*until) {
+				return false
+			}
+			return true
+		}
+	}
+
+	results := collectMatches(scanner, re, opts, lineFilter)
 	if err := scanner.Err(); err != nil {
 		return nil, fmt.Errorf("reading %q: %w", path, err)
 	}
 
 	return results, nil
-}
-
-// filterByTime returns only lines whose timestamp prefix falls within [since, until].
-// Lines that cannot be parsed are included (conservative approach).
-func filterByTime(lines []string, since, until *time.Time) []string {
-	var out []string
-	for _, line := range lines {
-		ts, ok := parseLineTimestamp(line)
-		if !ok {
-			// Cannot parse timestamp — include the line.
-			out = append(out, line)
-			continue
-		}
-		if since != nil && ts.Before(*since) {
-			continue
-		}
-		if until != nil && ts.After(*until) {
-			continue
-		}
-		out = append(out, line)
-	}
-	return out
 }
 
 // timestampFormats lists timestamp prefixes to try when parsing log lines.
@@ -644,11 +709,6 @@ func (m *Manager) SearchJournald(ctx context.Context, path string, opts SearchOp
 		return nil, fmt.Errorf("invalid pattern %q: %w", opts.Pattern, err)
 	}
 
-	maxResults := opts.MaxResults
-	if maxResults <= 0 {
-		maxResults = 200
-	}
-
 	args := buildJournalArgs(unit, opts.Since, opts.Until)
 	cmd := exec.CommandContext(ctx, "journalctl", args...)
 	stdout, err := cmd.StdoutPipe()
@@ -659,52 +719,9 @@ func (m *Manager) SearchJournald(ctx context.Context, path string, opts SearchOp
 		return nil, fmt.Errorf("journalctl start: %w", err)
 	}
 
-	k := opts.ContextLines
-	var beforeDeque []string
-	var results []Match
-	lineNum := 0
-	afterPending := 0
-
 	scanner := bufio.NewScanner(stdout)
-	for scanner.Scan() {
-		line := scanner.Text()
-		lineNum++
-
-		if afterPending > 0 {
-			results[len(results)-1].After = append(results[len(results)-1].After, line)
-			afterPending--
-		}
-
-		if re.MatchString(line) {
-			match := Match{LineNumber: lineNum, Line: line}
-			if k > 0 && len(beforeDeque) > 0 {
-				match.Before = make([]string, len(beforeDeque))
-				copy(match.Before, beforeDeque)
-			}
-			results = append(results, match)
-
-			if k > 0 {
-				if afterPending < k {
-					afterPending = k
-				}
-			}
-
-			if len(results) >= maxResults && afterPending == 0 {
-				break
-			}
-		}
-
-		if k > 0 {
-			if len(beforeDeque) >= k {
-				beforeDeque = beforeDeque[1:]
-			}
-			beforeDeque = append(beforeDeque, line)
-		}
-
-		if len(results) >= maxResults && afterPending == 0 {
-			break
-		}
-	}
+	// journalctl already filters by time via --since/--until, so no lineFilter needed.
+	results := collectMatches(scanner, re, opts, nil)
 
 	_ = cmd.Process.Kill()
 	_ = cmd.Wait()

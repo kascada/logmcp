@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/kleist-dev/logmcp/internal/config"
+	"github.com/kleist-dev/logmcp/internal/extensions/clitool"
 )
 
 // Result is the JSON-serialisable output of Run.
@@ -53,8 +54,12 @@ func Run(cfg *config.Config, opts Options) Result {
 	// Config loaded (always ok since caller provides a valid cfg).
 	add("Config file", true, opts.ConfigPath)
 
-	// At least one token configured.
-	add("auth.tokens configured", len(cfg.Auth.Tokens) > 0, fmt.Sprintf("%d token(s)", len(cfg.Auth.Tokens)))
+	// Auth configured: either static tokens or an external authenticator.
+	if cfg.Auth.Authenticator != nil {
+		add("auth configured", true, fmt.Sprintf("authenticator: %s", cfg.Auth.Authenticator.Command))
+	} else {
+		add("auth configured", len(cfg.Auth.Tokens) > 0, fmt.Sprintf("%d token(s)", len(cfg.Auth.Tokens)))
+	}
 
 	// At least one whitelist entry.
 	add("logs.whitelist has at least one entry", len(cfg.Logs.Whitelist) > 0, "")
@@ -131,6 +136,16 @@ func Run(cfg *config.Config, opts Options) Result {
 
 	// Syslog reachable.
 	add("Syslog reachable", checkSyslog(), "")
+
+	// Clitool extensions (if configured).
+	for _, ext := range cfg.Extensions.Clitool {
+		tools, err := clitool.List(ext.Command, 5*time.Second)
+		if err != nil {
+			add(fmt.Sprintf("extension %q accessible", ext.Name), false, err.Error())
+		} else {
+			add(fmt.Sprintf("extension %q accessible", ext.Name), true, fmt.Sprintf("%d tool(s)", len(tools)))
+		}
+	}
 
 	// MySQL servers (if configured).
 	for _, db := range cfg.Extensions.Databases.MySQL {

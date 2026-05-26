@@ -112,9 +112,9 @@ func runQuickstart(port int, tokenFlag, userFlag string) error {
 	cfg.Server.Host = "0.0.0.0"
 	cfg.Server.TLS.Mode = "self-signed"
 	cfg.Auth.Tokens = []config.TokenConfig{
-		{Name: "quickstart", Token: token, Scopes: []string{"read"}},
+		{Name: "quickstart", Token: token, Scopes: []string{"logmcp:read"}},
 	}
-	cfg.Logs.Whitelist = []string{"/var/log/*"}
+	cfg.Logs.Whitelist = config.DefaultWhitelist
 	cfg.Logs.Journald = true
 	cfg.Security.RateLimit = &config.TwoTierRateLimitConfig{
 		Burst: &config.RateLimitTierConfig{

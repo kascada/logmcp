@@ -39,7 +39,7 @@ func GenerateSelfSigned(host, certPath, keyPath string) error {
 			CommonName:   host,
 		},
 		NotBefore:             now.Add(-time.Minute),
-		NotAfter:              now.Add(10 * 365 * 24 * time.Hour), // 10 years
+		NotAfter:              now.Add(2 * 365 * 24 * time.Hour), // 2 years
 		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
 		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
 		BasicConstraintsValid: true,
