@@ -8,23 +8,12 @@ parameters:
     optional: true
     description: "Call ID to inspect. If omitted, the most recent call is used."
 steps:
-  - internal: db_query
-    id: cdr
+  - internal: extension
+    id: snapshot
     args:
-      database: switchboard
-      sql: >
-        SELECT * FROM call_records
-        WHERE call_id = {{ call_id }}
-        ORDER BY started_at DESC LIMIT 1
-  - internal: db_query
-    id: app_log
-    args:
-      database: switchboard
-      sql: >
-        SELECT ts, level, area, event, fields
-        FROM app_log
-        WHERE call_id = {{ call_id }}
-        ORDER BY ts DESC LIMIT 100
+      name: switchboard
+      tool: call_snapshot
+      call_id: "{{ call_id }}"
   - internal: read_file
     id: asterisk_log
     args:
@@ -36,4 +25,4 @@ steps:
     args:
       unit: switchboard
       window_s: 30
-      around: "{{ cdr.started_at }}"
+      around: "{{ snapshot.cdr.started_at }}"

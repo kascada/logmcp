@@ -2,14 +2,13 @@ package macro
 
 import (
 	"context"
-	"database/sql"
+	"encoding/json"
 	"fmt"
 	"os/exec"
 	"strings"
 	"time"
 
-	_ "github.com/go-sql-driver/mysql"
-	"github.com/kleist-dev/logmcp/internal/config"
+	"github.com/kleist-dev/logmcp/internal/extensions/dispatcher"
 	"github.com/kleist-dev/logmcp/internal/logs"
 )
 
@@ -22,77 +21,41 @@ func stepContext(parent context.Context) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(parent, stepTimeout)
 }
 
-// execDBQuery executes a db_query step.
-// The SQL query template is resolved for bind parameters (not string substitution).
-// Returns a []map[string]any with all rows.
-func execDBQuery(ctx context.Context, step StepDef, params map[string]string, stepResults map[string]any, cfg *config.Config) (any, error) {
+// execExtension executes an extension step by calling a registered clitool/rpc extension.
+// All args except 'name' and 'tool' are forwarded as JSON params to the extension tool.
+func execExtension(ctx context.Context, step StepDef, params map[string]string, stepResults map[string]any, d *dispatcher.Dispatcher) (any, error) {
 	ctx, cancel := stepContext(ctx)
 	defer cancel()
 
-	// Resolve database reference.
-	dbName, _ := step.Args["database"].(string)
-	dsn := findDSN(cfg, dbName)
-	if dsn == "" {
-		return nil, fmt.Errorf("no MySQL connection found for database %q", dbName)
+	if d == nil {
+		return nil, fmt.Errorf("extension step %q: no extensions configured", step.ID)
 	}
 
-	// Resolve SQL with bind parameters.
-	sqlTmpl, _ := step.Args["sql"].(string)
-	if sqlTmpl == "" {
-		return nil, fmt.Errorf("db_query step %q: missing 'sql' arg", step.ID)
-	}
-	query, bindArgs := interpolateForSQL(sqlTmpl, params, stepResults)
+	resolvedArgs := interpolateArgs(step.Args, params, stepResults)
 
-	db, err := sql.Open("mysql", ensureParseTime(dsn))
-	if err != nil {
-		return nil, fmt.Errorf("opening database: %w", err)
+	extName, _ := resolvedArgs["name"].(string)
+	if extName == "" {
+		return nil, fmt.Errorf("extension step %q: missing 'name' arg", step.ID)
 	}
-	defer db.Close()
-	db.SetConnMaxLifetime(10 * time.Second)
-	db.SetMaxOpenConns(1)
-
-	rows, err := db.QueryContext(ctx, query, bindArgs...)
-	if err != nil {
-		return nil, fmt.Errorf("querying database: %w", err)
-	}
-	defer rows.Close()
-
-	cols, err := rows.Columns()
-	if err != nil {
-		return nil, fmt.Errorf("reading columns: %w", err)
+	toolName, _ := resolvedArgs["tool"].(string)
+	if toolName == "" {
+		return nil, fmt.Errorf("extension step %q: missing 'tool' arg", step.ID)
 	}
 
-	var result []map[string]any
-	for rows.Next() {
-		// Create a slice of any pointers for scanning.
-		values := make([]any, len(cols))
-		valuePtrs := make([]any, len(cols))
-		for i := range values {
-			valuePtrs[i] = &values[i]
+	toolParams := make(map[string]any, len(resolvedArgs))
+	for k, v := range resolvedArgs {
+		if k == "name" || k == "tool" {
+			continue
 		}
-		if err := rows.Scan(valuePtrs...); err != nil {
-			return nil, fmt.Errorf("scanning row: %w", err)
-		}
-
-		row := make(map[string]any, len(cols))
-		for i, col := range cols {
-			val := values[i]
-			// MySQL driver returns []byte for text columns; convert to string.
-			if b, ok := val.([]byte); ok {
-				val = string(b)
-			}
-			row[col] = val
-		}
-		result = append(result, row)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterating rows: %w", err)
+		toolParams[k] = v
 	}
 
-	if result == nil {
-		result = []map[string]any{}
+	paramsJSON, err := json.Marshal(toolParams)
+	if err != nil {
+		return nil, fmt.Errorf("extension step %q: marshalling params: %w", step.ID, err)
 	}
-	return result, nil
+
+	return d.Call(ctx, extName, toolName, paramsJSON)
 }
 
 // execReadFile executes a read_file step, respecting logs.Manager access control.
@@ -191,6 +154,9 @@ func execJournalctl(ctx context.Context, step StepDef, params map[string]string,
 				"--since="+since.Format("2006-01-02 15:04:05"),
 				"--until="+until.Format("2006-01-02 15:04:05"),
 			)
+		} else {
+			// around present but unparseable — safe fallback.
+			args = append(args, "-n", "200")
 		}
 	} else {
 		// No around: fall back to since/until or tail.
@@ -200,7 +166,7 @@ func execJournalctl(ctx context.Context, step StepDef, params map[string]string,
 		if untilStr, ok := resolvedArgs["until"].(string); ok && untilStr != "" {
 			args = append(args, "--until="+untilStr)
 		}
-		if _, hasAround := resolvedArgs["around"]; !hasAround {
+		if aroundVal, _ := resolvedArgs["around"].(string); aroundVal == "" {
 			// Default: last 200 lines.
 			args = append(args, "-n", "200")
 		}
@@ -224,38 +190,6 @@ func execJournalctl(ctx context.Context, step StepDef, params map[string]string,
 	}, nil
 }
 
-// findDSN returns the DSN for the named MySQL connection.
-// Falls back to the first configured connection when name is empty or not found
-// (if there is exactly one connection configured).
-func findDSN(cfg *config.Config, name string) string {
-	if name != "" {
-		for _, db := range cfg.Extensions.Databases.MySQL {
-			if db.Name == name {
-				return db.DSN
-			}
-		}
-	}
-	// Fallback: use first entry if only one is configured.
-	if len(cfg.Extensions.Databases.MySQL) == 1 {
-		return cfg.Extensions.Databases.MySQL[0].DSN
-	}
-	if name == "" && len(cfg.Extensions.Databases.MySQL) > 0 {
-		return cfg.Extensions.Databases.MySQL[0].DSN
-	}
-	return ""
-}
-
-// ensureParseTime appends parseTime=true to the DSN if not already present.
-func ensureParseTime(dsn string) string {
-	if strings.Contains(dsn, "parseTime") {
-		return dsn
-	}
-	if strings.Contains(dsn, "?") {
-		return dsn + "&parseTime=true"
-	}
-	return dsn + "?parseTime=true"
-}
-
 // splitLines splits command output into trimmed lines, dropping a trailing blank.
 func splitLines(out []byte) []string {
 	s := strings.TrimRight(string(out), "\n")
@@ -275,9 +209,15 @@ func parseFlexibleTime(s string) (time.Time, error) {
 	if t, err := logs.ParseTimeOrDuration(s); err == nil {
 		return t, nil
 	}
-	// Try MySQL-style datetime.
-	if t, err := time.ParseInLocation("2006-01-02 15:04:05", s, time.Local); err == nil {
-		return t, nil
+	// Try ISO 8601 without timezone (Python datetime.isoformat).
+	for _, layout := range []string{
+		"2006-01-02T15:04:05.999999",
+		"2006-01-02T15:04:05",
+		"2006-01-02 15:04:05",
+	} {
+		if t, err := time.ParseInLocation(layout, s, time.Local); err == nil {
+			return t, nil
+		}
 	}
 	return time.Time{}, fmt.Errorf("cannot parse time %q", s)
 }

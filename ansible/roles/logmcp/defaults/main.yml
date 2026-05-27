@@ -1,5 +1,6 @@
 ---
 logmcp_version: "0.1.0"
+logmcp_arch: "{{ ansible_architecture | replace('x86_64', 'amd64') | replace('aarch64', 'arm64') }}"
 
 logmcp_port: 7788
 logmcp_path_prefix: "/logmcp"
@@ -11,3 +12,5 @@ logmcp_whitelist:
 logmcp_fail2ban_enabled: true
 # logmcp_rate_limit_max_failures: 10
 # logmcp_rate_limit_window_seconds: 60
+
+logmcp_macros_dir: /etc/logmcp/macros

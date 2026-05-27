@@ -531,9 +531,6 @@ func collectMatches(scanner *bufio.Scanner, re *regexp.Regexp, opts SearchOption
 				}
 			}
 
-			if len(results) >= maxResults && afterPending == 0 {
-				break
-			}
 		}
 
 		// Advance rolling before-deque.

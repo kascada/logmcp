@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/kleist-dev/logmcp/internal/config"
+	"github.com/kleist-dev/logmcp/internal/extensions/dispatcher"
 	"github.com/kleist-dev/logmcp/internal/logs"
 )
 
@@ -13,13 +13,13 @@ type RunResult map[string]any
 
 // Runner holds the dependencies needed to execute macro steps.
 type Runner struct {
-	cfg    *config.Config
-	logMgr *logs.Manager
+	logMgr     *logs.Manager
+	dispatcher *dispatcher.Dispatcher
 }
 
-// NewRunner creates a Runner.
-func NewRunner(cfg *config.Config, logMgr *logs.Manager) *Runner {
-	return &Runner{cfg: cfg, logMgr: logMgr}
+// NewRunner creates a Runner. d may be nil if no extensions are configured.
+func NewRunner(logMgr *logs.Manager, d *dispatcher.Dispatcher) *Runner {
+	return &Runner{logMgr: logMgr, dispatcher: d}
 }
 
 // Run executes all steps of def sequentially.
@@ -37,8 +37,8 @@ func (r *Runner) Run(ctx context.Context, def MacroDef, params map[string]string
 		)
 
 		switch step.Internal {
-		case "db_query":
-			out, err = execDBQuery(ctx, step, params, result, r.cfg)
+		case "extension":
+			out, err = execExtension(ctx, step, params, result, r.dispatcher)
 		case "read_file":
 			out, err = execReadFile(ctx, step, params, result, r.logMgr)
 		case "journalctl":

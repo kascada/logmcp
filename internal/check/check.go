@@ -147,22 +147,6 @@ func Run(cfg *config.Config, opts Options) Result {
 		}
 	}
 
-	// MySQL servers (if configured).
-	for _, db := range cfg.Extensions.Databases.MySQL {
-		addr, err := mysqlAddr(db.DSN)
-		if err != nil {
-			add(fmt.Sprintf("MySQL %s", db.Name), false, fmt.Sprintf("could not parse DSN: %v", err))
-			continue
-		}
-		conn, err := net.DialTimeout("tcp", addr, 3*time.Second)
-		if err != nil {
-			add(fmt.Sprintf("MySQL %s (%s)", db.Name, addr), false, err.Error())
-		} else {
-			conn.Close()
-			add(fmt.Sprintf("MySQL %s (%s)", db.Name, addr), true, "")
-		}
-	}
-
 	return r
 }
 
@@ -231,33 +215,3 @@ func checkSystemdService(name string) []Item {
 	}
 }
 
-// mysqlAddr extracts a "host:port" address from a Go sql-driver DSN.
-// Supported formats:
-//   - user:pass@tcp(host:port)/dbname
-//   - user:pass@tcp(host)/dbname  → port 3306
-//   - user:pass@host:port/dbname
-func mysqlAddr(dsn string) (string, error) {
-	at := strings.LastIndex(dsn, "@")
-	if at < 0 {
-		return "", fmt.Errorf("missing @ in DSN")
-	}
-	rest := dsn[at+1:]
-	if strings.HasPrefix(rest, "tcp(") {
-		end := strings.Index(rest, ")")
-		if end < 0 {
-			return "", fmt.Errorf("missing closing ) in tcp() DSN")
-		}
-		addr := rest[4:end]
-		if !strings.Contains(addr, ":") {
-			addr += ":3306"
-		}
-		return addr, nil
-	}
-	if slash := strings.Index(rest, "/"); slash >= 0 {
-		rest = rest[:slash]
-	}
-	if !strings.Contains(rest, ":") {
-		rest += ":3306"
-	}
-	return rest, nil
-}

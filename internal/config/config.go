@@ -146,9 +146,8 @@ type MacroConfig struct {
 
 // ExtensionsConfig holds optional extension settings.
 type ExtensionsConfig struct {
-	Clitool   []CltoolExtension `yaml:"clitool"`
-	Databases DatabasesConfig   `yaml:"databases"`
-	Macros    MacroConfig       `yaml:"macros"`
+	Clitool []CltoolExtension `yaml:"clitool"`
+	Macros  MacroConfig       `yaml:"macros"`
 }
 
 // CltoolExtension configures a single clitool-based MCP extension.
@@ -166,19 +165,6 @@ type CltoolExtension struct {
 	Mode string `yaml:"mode,omitempty"`
 	// RedisAddr is the Redis server address used when Mode is "rpc" (default: "127.0.0.1:6379").
 	RedisAddr string `yaml:"redis_addr,omitempty"`
-}
-
-// DatabasesConfig holds optional database connection configurations.
-type DatabasesConfig struct {
-	MySQL []MySQLConfig `yaml:"mysql"`
-}
-
-// MySQLConfig describes a single MySQL server connection.
-type MySQLConfig struct {
-	// Name is a human-readable label shown in `logmcp check` output.
-	Name string `yaml:"name"`
-	// DSN is the Go sql-driver DSN: user:pass@tcp(host:port)/dbname
-	DSN string `yaml:"dsn"`
 }
 
 // Default returns a Config populated with sensible defaults.

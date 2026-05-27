@@ -17,7 +17,7 @@ type ParamDef struct {
 
 // StepDef describes one step within a macro.
 type StepDef struct {
-	// Internal is the name of an internal step type (db_query, read_file, journalctl).
+	// Internal is the name of an internal step type (read_file, journalctl).
 	Internal string `yaml:"internal"`
 	// ID is the unique identifier for this step; used as key in the result object.
 	ID string `yaml:"id"`

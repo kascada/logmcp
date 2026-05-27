@@ -8,7 +8,7 @@ import (
 	"github.com/kleist-dev/logmcp/cmd"
 )
 
-//go:embed docs/index.md docs/CONFIG.md docs/LOGGING.md docs/ANSIBLE.md
+//go:embed docs/*.md
 var docsFS embed.FS
 
 func main() {

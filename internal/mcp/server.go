@@ -21,7 +21,7 @@ import (
 	"github.com/kleist-dev/logmcp/internal/check"
 	"github.com/kleist-dev/logmcp/internal/config"
 	"github.com/kleist-dev/logmcp/internal/extensions/clitool"
-	"github.com/kleist-dev/logmcp/internal/extensions/rpc"
+	"github.com/kleist-dev/logmcp/internal/extensions/dispatcher"
 	"github.com/kleist-dev/logmcp/internal/logs"
 	"github.com/kleist-dev/logmcp/internal/macro"
 	internaltls "github.com/kleist-dev/logmcp/internal/tls"
@@ -72,8 +72,6 @@ func New(cfg *config.Config, logMgr *logs.Manager, docsFS embed.FS) (*Server, er
 
 	s.registerTools()
 	s.registerResources()
-
-	s.registerCltoolExtensions()
 
 	// Build the StreamableHTTP transport.
 	s.httpSrv = server.NewStreamableHTTPServer(
@@ -293,7 +291,7 @@ func (s *Server) registerTools() {
 func (s *Server) registerMacros() {
 	dir := s.cfg.Extensions.Macros.Dir
 	macros := macro.LoadDir(dir)
-	runner := macro.NewRunner(s.cfg, s.logMgr)
+	runner := macro.NewRunner(s.logMgr, dispatcher.New(s.cfg.Extensions.Clitool))
 
 	for _, m := range macros {
 		if !s.toolEnabled(m.Name) {
@@ -547,7 +545,6 @@ type currentValues struct {
 	RateLimit   bool     `json:"rate_limit"`
 	Disabled    []string `json:"tools_disabled,omitempty"`
 	Macros      string   `json:"macros_dir,omitempty"`
-	MySQL       int      `json:"mysql_connections"`
 }
 
 // collectDefaults returns the list of optional config parameters that are
@@ -604,14 +601,6 @@ func collectDefaults(cfg *config.Config) []optionalParam {
 			Explanation: "Directory for YAML macro files that define reusable log query shortcuts.",
 		})
 	}
-	if len(cfg.Extensions.Databases.MySQL) == 0 {
-		defaults = append(defaults, optionalParam{
-			Name:        "extensions.databases.mysql",
-			Default:     "[]",
-			Explanation: "MySQL connection configurations for database log access via the databases extension.",
-		})
-	}
-
 	return defaults
 }
 
@@ -635,8 +624,7 @@ func (s *Server) handleCheckConfig(ctx context.Context, req mcp.CallToolRequest)
 		Fail2ban:    cfg.Security.Fail2ban.Enabled,
 		RateLimit:   cfg.Security.RateLimit != nil,
 		Disabled:    cfg.Tools.Disabled,
-		Macros:      cfg.Extensions.Macros.Dir,
-		MySQL:       len(cfg.Extensions.Databases.MySQL),
+		Macros: cfg.Extensions.Macros.Dir,
 	}
 
 	result := struct {
@@ -650,99 +638,6 @@ func (s *Server) handleCheckConfig(ctx context.Context, req mcp.CallToolRequest)
 	return marshalResult(result)
 }
 
-// registerCltoolExtensions discovers and registers all configured clitool extensions.
-// For each extension, it calls `<command> list` to get tool definitions, then registers
-// each tool with a name prefix of `<ext.Name>_`. If an extension cannot be reached,
-// a warning is logged and the extension is skipped — the server starts regardless.
-// Use `logmcp check` to diagnose extension access problems.
-func (s *Server) registerCltoolExtensions() {
-	for _, ext := range s.cfg.Extensions.Clitool {
-		timeout := time.Duration(ext.TimeoutSeconds) * time.Second
-		if timeout <= 0 {
-			timeout = 10 * time.Second
-		}
-
-		tools, err := clitool.List(ext.Command, timeout)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "warning: clitool extension %q unavailable: %v (run `logmcp check` for details)\n", ext.Name, err)
-			continue
-		}
-
-		// Capture loop variables for closures.
-		extName := ext.Name
-		extCommand := ext.Command
-		extTimeout := timeout
-		extMode := ext.Mode
-		extRedisAddr := ext.RedisAddr
-		if extRedisAddr == "" {
-			extRedisAddr = "127.0.0.1:6379"
-		}
-
-		for _, toolDef := range tools {
-			prefixedName := extName + "_" + toolDef.Name
-			unprefixedName := toolDef.Name
-
-			desc := toolDef.Description
-			if len(toolDef.InputSchema) > 0 && string(toolDef.InputSchema) != "null" {
-				desc += "\n\nInput schema: " + string(toolDef.InputSchema)
-			}
-
-			tool := mcp.NewTool(prefixedName, mcp.WithDescription(desc))
-			s.mcpSrv.AddTool(tool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-				// Extract raw params from the request arguments.
-				var params json.RawMessage
-				if req.Params.Arguments != nil {
-					if data, err := json.Marshal(req.Params.Arguments); err == nil {
-						params = data
-					}
-				}
-
-				var result *clitool.CallResult
-				var err error
-
-				if extMode == "rpc" {
-					callerName := auth.TokenNameFromCtx(ctx)
-					callerScopes := auth.TokenScopesFromCtx(ctx)
-					if callerScopes == nil {
-						if t := s.cfg.Auth.Find(callerName); t != nil {
-							callerScopes = t.Scopes
-						} else {
-							callerScopes = []string{}
-						}
-					}
-					result, err = rpc.Call(ctx, extRedisAddr, unprefixedName, callerName, callerScopes, params, extTimeout)
-				} else {
-					token := auth.TokenValueFromCtx(ctx)
-					result, err = clitool.Call(ctx, extCommand, unprefixedName, token, params, extTimeout)
-				}
-
-				if err != nil {
-					return mcp.NewToolResultError(fmt.Sprintf("clitool call error: %v", err)), nil
-				}
-
-				switch result.Code {
-				case "auth_failed":
-					return mcp.NewToolResultError("authentication failed: " + result.Error), nil
-				case "scope_denied":
-					return mcp.NewToolResultError("permission denied: " + result.Error), nil
-				}
-
-				if !result.OK {
-					errMsg := result.Error
-					if errMsg == "" {
-						errMsg = "clitool call failed"
-					}
-					return mcp.NewToolResultError(errMsg), nil
-				}
-
-				if result.Result != nil {
-					return mcp.NewToolResultText(string(result.Result)), nil
-				}
-				return mcp.NewToolResultText("{}"), nil
-			})
-		}
-	}
-}
 
 // Start launches the MCP HTTP server, blocking until it exits.
 // It handles SIGTERM and SIGINT by draining active requests (up to 10s) before
@@ -913,6 +808,9 @@ func (s *Server) buildHandler() http.Handler {
 
 	mux.Handle(prefix+"/mcp", protected)
 	mux.Handle(prefix+"/mcp/", protected)
+	mux.HandleFunc(prefix+"/healthz", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
 
 	return mux
 }

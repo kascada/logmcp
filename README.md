@@ -166,7 +166,7 @@ These are the tools LogMCP exposes to AI assistants:
 | `log_info` | File metadata: size, line count, last modified |
 | `check_environment` | Server-side health checks (config, TLS, whitelist, syslog, databases) |
 
-Extensions may add further tools (e.g. `switchboard_debug` for the Switchboard extension).
+Extensions may add further tools — their names are prefixed with the extension name (e.g. `myapp_status` for an extension named `myapp`).
 
 ## Extensions — Wrapping External Tools as MCP
 
@@ -200,7 +200,7 @@ extensions:
       timeout_seconds: 5
 ```
 
-The worker reads from `sb:rpc:req` and pushes its reply to `sb:rpc:reply:<uuid>`. See [docs/RPC.md](docs/RPC.md) for the full protocol.
+The worker reads requests from a Redis list and pushes its reply to a per-request reply key. See [docs/RPC.md](docs/RPC.md) for the full protocol.
 
 ### Auth flow
 

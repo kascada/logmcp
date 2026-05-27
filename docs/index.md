@@ -10,6 +10,7 @@ This is the entry point for all LogMCP documentation available as MCP resources.
 | `logmcp://docs/config` | Configuration reference: all config keys, defaults, and examples |
 | `logmcp://docs/logging` | Logging and audit reference: syslog format, fail2ban integration |
 | `logmcp://docs/ansible` | Ansible role reference: automated deployment via the official Debian package |
+| `logmcp://docs/macro` | Macro reference: define custom MCP tools in YAML |
 
 ## How to access
 
@@ -21,3 +22,4 @@ Fetch any resource by its URI via the MCP protocol. Example: to read the configu
 - **Deploying with Ansible?** See `logmcp://docs/ansible`.
 - **Diagnosing auth or audit issues?** See `logmcp://docs/logging`.
 - **Checking the current server config at runtime?** Use the `check_config` MCP tool.
+- **Defining custom MCP tools from YAML?** See `logmcp://docs/macro`.

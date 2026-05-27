@@ -25,6 +25,12 @@ logs:
     - "{{ path }}"
 {% endfor %}
 
+{% if logmcp_macros_dir is defined and logmcp_macros_dir %}
+extensions:
+  macros:
+    dir: "{{ logmcp_macros_dir }}"
+
+{% endif %}
 audit:
   syslog: true
 

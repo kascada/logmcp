@@ -184,6 +184,7 @@ func saveConfig(cfg *config.Config) error {
 		return fmt.Errorf("writing config: %w", err)
 	}
 	_ = exec.Command("chown", "root:logmcp", config.DefaultConfigPath).Run()
+	config.BackfillComments(config.DefaultConfigPath)
 	return nil
 }
 

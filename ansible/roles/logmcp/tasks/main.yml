@@ -1,14 +1,23 @@
 ---
 - name: Download logmcp package
   ansible.builtin.get_url:
-    url: "https://github.com/kascada/logmcp/releases/download/v{{ logmcp_version }}/logmcp_{{ logmcp_version }}_amd64.deb"
-    dest: "/tmp/logmcp_{{ logmcp_version }}_amd64.deb"
+    url: "https://github.com/kascada/logmcp/releases/download/v{{ logmcp_version }}/logmcp_{{ logmcp_version }}_{{ logmcp_arch }}.deb"
+    dest: "/tmp/logmcp_{{ logmcp_version }}_{{ logmcp_arch }}.deb"
     mode: "0644"
 
 - name: Install logmcp
   ansible.builtin.apt:
-    deb: "/tmp/logmcp_{{ logmcp_version }}_amd64.deb"
+    deb: "/tmp/logmcp_{{ logmcp_version }}_{{ logmcp_arch }}.deb"
     state: present
+
+- name: Create macros directory
+  ansible.builtin.file:
+    path: "{{ logmcp_macros_dir }}"
+    state: directory
+    owner: root
+    group: logmcp
+    mode: "0750"
+  when: logmcp_macros_dir is defined and logmcp_macros_dir
 
 - name: Write config
   ansible.builtin.template:

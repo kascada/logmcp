@@ -4,30 +4,30 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
-	"strings"
 )
 
-// placeholderRe matches {{ identifier }} and {{ identifier.field }} patterns.
-var placeholderRe = regexp.MustCompile(`\{\{\s*([a-zA-Z_][a-zA-Z0-9_]*)(?:\.([a-zA-Z_][a-zA-Z0-9_]*))?\s*\}\}`)
+// placeholderRe matches {{ identifier }} and {{ identifier.field.subfield... }} patterns.
+var placeholderRe = regexp.MustCompile(`\{\{\s*([a-zA-Z_][a-zA-Z0-9_.]*)?\s*\}\}`)
 
-// interpolateString replaces all {{ param }} and {{ step_id.field }} placeholders
+// interpolateString replaces all {{ param }} and {{ step_id.field.subfield }} placeholders
 // in s with string values from params and stepResults.
 //
 // Resolution rules:
-//   - {{ name }}         → params["name"] if present; else stepResults["name"] as a whole JSON value
-//   - {{ step_id.field }} → look up stepResults["step_id"], extract .field;
+//   - {{ name }}                    → params["name"] if present; else stepResults["name"] as a whole JSON value
+//   - {{ step_id.field.subfield }}  → look up stepResults["step_id"], traverse .field.subfield;
 //     if the result is an array, use the first element (array-of-one pattern);
 //     if not found or null, replace with ""
-//
-// This function is used for non-SQL args. For db_query SQL args, use
-// interpolateForSQL which returns (query, bindArgs) instead.
 func interpolateString(s string, params map[string]string, stepResults map[string]any) string {
 	return placeholderRe.ReplaceAllStringFunc(s, func(match string) string {
 		sub := placeholderRe.FindStringSubmatch(match)
-		name := sub[1]
-		field := sub[2]
+		if len(sub) < 2 || sub[1] == "" {
+			return ""
+		}
+		parts := splitDot(sub[1])
+		name := parts[0]
+		fields := parts[1:]
 
-		if field == "" {
+		if len(fields) == 0 {
 			// {{ name }} — check params first, then step results.
 			if v, ok := params[name]; ok {
 				return v
@@ -38,13 +38,26 @@ func interpolateString(s string, params map[string]string, stepResults map[strin
 			return ""
 		}
 
-		// {{ step_id.field }} — look up step result.
+		// {{ step_id.field... }} — look up step result and traverse fields.
 		raw, ok := stepResults[name]
 		if !ok {
 			return ""
 		}
-		return extractField(raw, field)
+		return extractField(raw, fields)
 	})
+}
+
+// splitDot splits a dot-separated identifier into parts.
+func splitDot(s string) []string {
+	var parts []string
+	start := 0
+	for i := 0; i < len(s); i++ {
+		if s[i] == '.' {
+			parts = append(parts, s[start:i])
+			start = i + 1
+		}
+	}
+	return append(parts, s[start:])
 }
 
 // interpolateArgs recursively interpolates all string values in an args map,
@@ -63,93 +76,29 @@ func interpolateArgs(args map[string]any, params map[string]string, stepResults 
 	return result
 }
 
-// interpolateForSQL processes a SQL query string and extracts bind parameters.
-// Every {{ ... }} placeholder in the query is replaced with a single "?" and its
-// resolved value is collected into the returned args slice — preserving order.
-//
-// The sql string itself is NOT modified for injection; only the placeholder
-// tokens are replaced with "?" and the values bound as parameters.
-// This prevents SQL injection regardless of parameter content.
-func interpolateForSQL(sql string, params map[string]string, stepResults map[string]any) (query string, bindArgs []any) {
-	// We must iterate in order, replacing each placeholder one at a time.
-	remaining := sql
-	var queryBuilder strings.Builder
-
-	for {
-		loc := placeholderRe.FindStringIndex(remaining)
-		if loc == nil {
-			queryBuilder.WriteString(remaining)
-			break
-		}
-
-		// Text before the placeholder.
-		queryBuilder.WriteString(remaining[:loc[0]])
-		// Replace placeholder with "?".
-		queryBuilder.WriteString("?")
-
-		// Extract the matched placeholder and resolve its value.
-		matchStr := remaining[loc[0]:loc[1]]
-		sub := placeholderRe.FindStringSubmatch(matchStr)
-		name := sub[1]
-		field := sub[2]
-
-		var resolved any
-		if field == "" {
-			// {{ name }} — check params first (as string), then step results.
-			if v, ok := params[name]; ok {
-				resolved = v
-			} else if v, ok := stepResults[name]; ok {
-				resolved = v
-			} else {
-				resolved = ""
+// extractField traverses fields into a step result value, returning the
+// string representation of the leaf. Supports nested paths like ["cdr", "started_at"].
+// If v is an array at any level, the first element is used.
+func extractField(v any, fields []string) string {
+	for _, field := range fields {
+		// Unwrap array: use first element.
+		if typed, ok := v.([]any); ok {
+			if len(typed) == 0 {
+				return ""
 			}
-		} else {
-			// {{ step_id.field }}
-			raw, ok := stepResults[name]
-			if !ok {
-				resolved = ""
-			} else {
-				resolved = extractField(raw, field)
-			}
+			v = typed[0]
 		}
-		bindArgs = append(bindArgs, resolved)
-
-		remaining = remaining[loc[1]:]
-	}
-
-	return queryBuilder.String(), bindArgs
-}
-
-// extractField retrieves a named field from a step result value.
-// If v is an array, the first element is used (array-of-one CDR pattern).
-// Returns "" if the field does not exist or the value is null/empty.
-func extractField(v any, field string) string {
-	// Unwrap array: use first element.
-	// db_query returns []map[string]any; both slice types must be handled.
-	switch typed := v.(type) {
-	case []any:
-		if len(typed) == 0 {
+		m, ok := v.(map[string]any)
+		if !ok {
 			return ""
 		}
-		v = typed[0]
-	case []map[string]any:
-		if len(typed) == 0 {
-			return ""
-		}
-		v = typed[0]
-	}
-
-	// v should now be a map.
-	switch m := v.(type) {
-	case map[string]any:
 		val, ok := m[field]
 		if !ok || val == nil {
 			return ""
 		}
-		return anyToString(val)
+		v = val
 	}
-
-	return ""
+	return anyToString(v)
 }
 
 // anyToString converts an arbitrary value to its string representation.

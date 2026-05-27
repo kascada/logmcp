@@ -94,7 +94,9 @@ func BackfillComments(path string) {
 	for _, sec := range knownOptionalSections {
 		var missingLines []string
 		for _, p := range sec.params {
-			// Present if the bare key appears anywhere (active or commented).
+			// Substring match covers both active keys and commented-out hints.
+			// False positives (key appears in a comment) only suppress a redundant
+			// hint — they never hide a real value, so the imprecision is harmless.
 			if strings.Contains(content, p.key) {
 				continue
 			}
