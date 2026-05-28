@@ -1,13 +1,14 @@
+version: "2"
+
 linters:
-  disable-all: true
+  default: none
   enable:
     - staticcheck
     - errcheck
-
-linters-settings:
-  errcheck:
-    check-type-assertions: true
-    check-blank: true
+  settings:
+    errcheck:
+      check-type-assertions: true
+      check-blank: true
 
 issues:
   max-issues-per-linter: 0
