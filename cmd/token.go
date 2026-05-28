@@ -39,9 +39,9 @@ func newTokenListCmd() *cobra.Command {
 				return err
 			}
 			w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-			fmt.Fprintln(w, "NAME\tSCOPES\tTOKEN")
+			_, _ = fmt.Fprintln(w, "NAME\tSCOPES\tTOKEN")
 			for _, t := range cfg.Auth.Tokens {
-				fmt.Fprintf(w, "%s\t%s\t%s\n", t.Name, strings.Join(t.Scopes, ","), maskToken(t.Token))
+				_, _ = fmt.Fprintf(w, "%s\t%s\t%s\n", t.Name, strings.Join(t.Scopes, ","), maskToken(t.Token))
 			}
 			return w.Flush()
 		},

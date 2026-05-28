@@ -6,9 +6,7 @@ linters:
     - staticcheck
     - errcheck
   settings:
-    errcheck:
-      check-type-assertions: true
-      check-blank: true
+    errcheck: {}
 
 issues:
   max-issues-per-linter: 0

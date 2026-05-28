@@ -46,7 +46,7 @@ func runSetup(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("initializing readline: %w", err)
 	}
-	defer rl.Close()
+	defer func() { _ = rl.Close() }()
 
 	fmt.Println("=== LogMCP Setup Wizard ===")
 	fmt.Println()
@@ -245,7 +245,7 @@ func promptPort(rl *readline.Instance, cfg *config.Config) error {
 				continue
 			}
 		} else {
-			ln.Close()
+			_ = ln.Close()
 		}
 		cfg.Server.Port = port
 		break

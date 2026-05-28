@@ -52,7 +52,7 @@ func runQuickstart(port int, tokenFlag, userFlag string) error {
 	if err != nil {
 		return fmt.Errorf("initializing readline: %w", err)
 	}
-	defer rl.Close()
+	defer func() { _ = rl.Close() }()
 
 	interactive := term.IsTerminal(int(os.Stdin.Fd()))
 
@@ -132,7 +132,7 @@ func runQuickstart(port int, tokenFlag, userFlag string) error {
 	if err != nil {
 		return fmt.Errorf("creating temp dir: %w", err)
 	}
-	defer os.RemoveAll(tmpDir)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	certPath := tmpDir + "/server.crt"
 	keyPath := tmpDir + "/server.key"

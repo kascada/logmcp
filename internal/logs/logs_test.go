@@ -41,7 +41,9 @@ func TestMatchGlob(t *testing.T) {
 func TestIsAllowed_BlacklistPrecedence(t *testing.T) {
 	dir := t.TempDir()
 	file := filepath.Join(dir, "app.log")
-	os.WriteFile(file, nil, 0644)
+	if err := os.WriteFile(file, nil, 0644); err != nil {
+		t.Fatal(err)
+	}
 
 	m := NewManager([]string{dir + "/*"}, []string{dir + "/*.log"}, false)
 	if m.IsAllowed(file) {
@@ -52,7 +54,9 @@ func TestIsAllowed_BlacklistPrecedence(t *testing.T) {
 func TestIsAllowed_Traversal(t *testing.T) {
 	dir := t.TempDir()
 	file := filepath.Join(dir, "app.log")
-	os.WriteFile(file, nil, 0644)
+	if err := os.WriteFile(file, nil, 0644); err != nil {
+		t.Fatal(err)
+	}
 
 	m := NewManager([]string{dir + "/*.log"}, nil, false)
 
@@ -149,7 +153,7 @@ func TestSafeOpenFile_SymlinkOutsideWhitelist(t *testing.T) {
 
 	f, err := safeOpenFile(link, whitelist, blacklist)
 	if err == nil {
-		f.Close()
+		_ = f.Close()
 		t.Fatal("expected access denied, got nil error")
 	}
 	if !strings.Contains(err.Error(), "access denied") {
@@ -176,7 +180,7 @@ func TestSafeOpenFile_SymlinkInsideWhitelist(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected success for symlink within whitelist, got: %v", err)
 	}
-	f.Close()
+	_ = f.Close()
 }
 
 func TestSafeOpenFile_PlainFileInsideWhitelist(t *testing.T) {
@@ -193,7 +197,7 @@ func TestSafeOpenFile_PlainFileInsideWhitelist(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected success for plain file in whitelist, got: %v", err)
 	}
-	f.Close()
+	_ = f.Close()
 }
 
 

@@ -171,8 +171,8 @@ func extractClientIP(r *http.Request, trustedProxy bool) string {
 // sanitizeIP strips any character not valid in an IP address to prevent log injection.
 func sanitizeIP(ip string) string {
 	for _, r := range ip {
-		if !((r >= '0' && r <= '9') || (r >= 'a' && r <= 'f') || (r >= 'A' && r <= 'F') ||
-			r == '.' || r == ':' || r == '[' || r == ']') {
+		if (r < '0' || r > '9') && (r < 'a' || r > 'f') && (r < 'A' || r > 'F') &&
+			r != '.' && r != ':' && r != '[' && r != ']' {
 			return "invalid"
 		}
 	}

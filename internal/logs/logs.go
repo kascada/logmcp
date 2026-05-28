@@ -225,11 +225,11 @@ func safeOpenFile(path string, whitelist, blacklist []string) (*os.File, error) 
 	fdPath := fmt.Sprintf("/proc/self/fd/%d", f.Fd())
 	realPath, err := os.Readlink(fdPath)
 	if err != nil {
-		f.Close()
+		_ = f.Close()
 		return nil, fmt.Errorf("resolving fd path: %w", err)
 	}
 	if !checkACL(realPath, whitelist, blacklist) {
-		f.Close()
+		_ = f.Close()
 		return nil, fmt.Errorf("access denied: path changed after whitelist check")
 	}
 	return f, nil
@@ -363,7 +363,7 @@ func (m *Manager) fileInfoWithACL(path string, whitelist, blacklist []string) (F
 	if err != nil {
 		return fi, nil
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	fi.Readable = true
 
@@ -393,7 +393,7 @@ func (m *Manager) ReadFile(ctx context.Context, path string, opts ReadOptions) (
 	if err != nil {
 		return nil, fmt.Errorf("opening %q: %w", path, err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	n := opts.Lines
 	if n <= 0 {
@@ -567,7 +567,7 @@ func (m *Manager) SearchFile(ctx context.Context, path string, opts SearchOption
 	if err != nil {
 		return nil, fmt.Errorf("opening %q: %w", path, err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	scanner := bufio.NewScanner(f)
 	scanner.Buffer(make([]byte, scannerBufSize), scannerBufSize)

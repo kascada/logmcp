@@ -174,7 +174,9 @@ func TestHandleReadLog(t *testing.T) {
 
 	t.Run("acl_denied", func(t *testing.T) {
 		outsidePath := filepath.Join(t.TempDir(), "secret.log")
-		os.WriteFile(outsidePath, []byte("secret\n"), 0644)
+		if err := os.WriteFile(outsidePath, []byte("secret\n"), 0644); err != nil {
+			t.Fatal(err)
+		}
 
 		res, err := srv.handleReadLog(context.Background(), makeReq(map[string]any{
 			"path": outsidePath,
@@ -277,7 +279,9 @@ func TestHandleSearchLog(t *testing.T) {
 
 	t.Run("acl_denied", func(t *testing.T) {
 		outsidePath := filepath.Join(t.TempDir(), "private.log")
-		os.WriteFile(outsidePath, []byte("secret\n"), 0644)
+		if err := os.WriteFile(outsidePath, []byte("secret\n"), 0644); err != nil {
+			t.Fatal(err)
+		}
 
 		res, err := srv.handleSearchLog(context.Background(), makeReq(map[string]any{
 			"path":    outsidePath,
@@ -399,7 +403,9 @@ func TestHandleLogInfo(t *testing.T) {
 
 	t.Run("acl_denied", func(t *testing.T) {
 		outsidePath := filepath.Join(t.TempDir(), "outside.log")
-		os.WriteFile(outsidePath, []byte("data\n"), 0644)
+		if err := os.WriteFile(outsidePath, []byte("data\n"), 0644); err != nil {
+			t.Fatal(err)
+		}
 
 		res, err := srv.handleLogInfo(context.Background(), makeReq(map[string]any{
 			"path": outsidePath,
@@ -473,7 +479,9 @@ func TestMatchGlobDoublestar(t *testing.T) {
 	nested := filepath.Join(sub, "nested.log")
 	veryDeep := filepath.Join(deep, "verydeep.log")
 	for _, f := range []string{shallow, nested, veryDeep} {
-		os.WriteFile(f, []byte("data\n"), 0644)
+		if err := os.WriteFile(f, []byte("data\n"), 0644); err != nil {
+			t.Fatal(err)
+		}
 	}
 
 	tests := []struct {

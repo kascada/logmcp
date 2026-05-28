@@ -92,7 +92,7 @@ func Run(cfg *config.Config, opts Options) Result {
 		for _, m := range matches {
 			f, err := os.Open(m)
 			if err == nil {
-				f.Close()
+				_ = f.Close()
 				readable++
 			}
 		}
@@ -117,7 +117,7 @@ func Run(cfg *config.Config, opts Options) Result {
 		conn, err := net.DialTimeout("tcp", addr, 3*time.Second)
 		reachable := err == nil
 		if reachable {
-			conn.Close()
+			_ = conn.Close()
 		}
 		detail := ""
 		if err != nil {
@@ -179,13 +179,13 @@ func checkSyslog() bool {
 	if _, err := os.Stat("/dev/log"); err == nil {
 		conn, err := net.Dial("unixgram", "/dev/log")
 		if err == nil {
-			conn.Close()
+			_ = conn.Close()
 			return true
 		}
 	}
 	conn, err := net.Dial("udp", "127.0.0.1:514")
 	if err == nil {
-		conn.Close()
+		_ = conn.Close()
 		return true
 	}
 	return false
