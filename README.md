@@ -89,10 +89,14 @@ This makes LogMCP ideal for situations where you need AI-assisted debugging but 
 - Whitelist/blacklist glob patterns for fine-grained access control
 - systemd journal (`journald://`) as a virtual log source
 - Multi-token auth — per-client bearer tokens with revocation
+- External authenticator support — delegate token verification to any CLI program
 - TLS support: self-signed, custom cert, or behind Caddy reverse proxy
 - Audit trail via syslog (access only, no log content)
 - Guided interactive setup wizard
 - Systemd service integration
+- Extensions — expose external CLI tools or Redis-RPC workers as additional MCP tools
+- Macros — define composite MCP tools as YAML files, no code required
+- fail2ban integration and in-process rate limiting
 
 ## Setup Details
 
@@ -116,10 +120,10 @@ auth:
       scopes: [read]
 
 extensions:
-  databases:
-    mysql:
-      - name: prod
-        dsn: ${DB_USER}:${DB_PASS}@tcp(localhost:3306)/mydb
+  clitool:
+    - name: switchboard
+      command: /usr/local/bin/switchboard
+      timeout_seconds: 10
 ```
 
 Unset variables expand to an empty string. To keep a literal `$` in a value, use `$$`.
@@ -153,6 +157,7 @@ sudo systemctl start logmcp
 | `logmcp client-config claude-code` | Print Claude Code MCP config |
 | `logmcp client-config vscode` | Print VS Code MCP config |
 | `logmcp client-config claude-desktop` | Print Claude Desktop MCP config |
+| `logmcp security install-fail2ban` | Install fail2ban filter and jail for logmcp |
 
 ## MCP Tools
 
@@ -165,6 +170,8 @@ These are the tools LogMCP exposes to AI assistants:
 | `search_log` | Search a log file by regexp with optional context lines and time filter |
 | `log_info` | File metadata: size, line count, last modified |
 | `check_environment` | Server-side health checks (config, TLS, whitelist, syslog, databases) |
+| `check_config` | Show current server configuration and optional parameters at their defaults |
+| `server_status` | Runtime status of the MCP layer and registered extensions |
 
 Extensions may add further tools — their names are prefixed with the extension name (e.g. `myapp_status` for an extension named `myapp`).
 

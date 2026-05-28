@@ -13,6 +13,10 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// configPath is the path to the config file used by loadConfigRaw and saveConfig.
+// It is a variable (not a constant) so that tests can redirect writes to a temp file.
+var configPath = config.DefaultConfigPath
+
 func newTokenCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "token",
@@ -163,7 +167,7 @@ func newTokenRenewCmd() *cobra.Command {
 
 // loadConfigRaw loads the config without validation so we can modify it freely.
 func loadConfigRaw() (*config.Config, error) {
-	data, err := os.ReadFile(config.DefaultConfigPath)
+	data, err := os.ReadFile(configPath)
 	if err != nil {
 		return nil, fmt.Errorf("reading config: %w", err)
 	}
@@ -180,18 +184,18 @@ func saveConfig(cfg *config.Config) error {
 	if err != nil {
 		return fmt.Errorf("marshalling config: %w", err)
 	}
-	if err := os.WriteFile(config.DefaultConfigPath, data, 0o640); err != nil {
+	if err := os.WriteFile(configPath, data, 0o640); err != nil {
 		return fmt.Errorf("writing config: %w", err)
 	}
-	_ = exec.Command("chown", "root:logmcp", config.DefaultConfigPath).Run()
-	config.BackfillComments(config.DefaultConfigPath)
+	_ = exec.Command("chown", "root:logmcp", configPath).Run()
+	config.BackfillComments(configPath)
 	return nil
 }
 
 // parseScopes splits a comma-separated scope string and trims whitespace.
 func parseScopes(s string) []string {
 	var out []string
-	for _, p := range strings.Split(s, ",") {
+	for p := range strings.SplitSeq(s, ",") {
 		p = strings.TrimSpace(p)
 		if p != "" {
 			out = append(out, p)

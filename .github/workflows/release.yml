@@ -1,0 +1,66 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Sync unit file
+        run: cp packaging/logmcp.service cmd/assets/logmcp.service
+
+      - name: Build binary
+        run: go build -o logmcp .
+
+      - name: Build .deb
+        run: |
+          VERSION=$(git describe --tags | sed 's/^v//')
+          ARCH=$(dpkg --print-architecture)
+          DEB_NAME="logmcp_${VERSION}_${ARCH}.deb"
+
+          rm -rf .deb-staging
+          mkdir -p .deb-staging/DEBIAN
+          mkdir -p .deb-staging/usr/local/bin
+          mkdir -p .deb-staging/lib/systemd/system
+          mkdir -p .deb-staging/etc/logmcp
+
+          cp logmcp .deb-staging/usr/local/bin/logmcp
+          chmod 755 .deb-staging/usr/local/bin/logmcp
+          cp packaging/logmcp.service .deb-staging/lib/systemd/system/logmcp.service
+
+          sed "s/@@VERSION@@/${VERSION}/; s/@@ARCH@@/${ARCH}/" packaging/control > .deb-staging/DEBIAN/control
+          cp packaging/postinst .deb-staging/DEBIAN/postinst
+          cp packaging/prerm    .deb-staging/DEBIAN/prerm
+          cp packaging/postrm   .deb-staging/DEBIAN/postrm
+          chmod 755 .deb-staging/DEBIAN/postinst .deb-staging/DEBIAN/prerm .deb-staging/DEBIAN/postrm
+
+          dpkg-deb --build --root-owner-group .deb-staging "$DEB_NAME"
+          rm -rf .deb-staging
+
+          echo "DEB_NAME=${DEB_NAME}" >> "$GITHUB_ENV"
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create ${{ github.ref_name }} \
+            --title "LogMCP ${{ github.ref_name }}" \
+            --generate-notes \
+            "$DEB_NAME"

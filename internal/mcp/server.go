@@ -39,6 +39,7 @@ type clientIPKey struct{}
 type Server struct {
 	mu               sync.RWMutex
 	cfg              *config.Config
+	tokenEntries     []auth.TokenEntry
 	logMgr           *logs.Manager
 	docsFS           embed.FS
 	mcpSrv           *server.MCPServer
@@ -46,6 +47,8 @@ type Server struct {
 	burstLimiter     *auth.RateLimiter
 	sustainedLimiter *auth.RateLimiter
 	verifyCache      *auth.VerifyCache
+	dispatcher       *dispatcher.Dispatcher
+	registeredTools  map[string]struct{}
 }
 
 // New creates a new MCP Server with all tools registered.
@@ -57,10 +60,13 @@ func New(cfg *config.Config, logMgr *logs.Manager, docsFS embed.FS) (*Server, er
 		docsFS:           docsFS,
 		burstLimiter:     burst,
 		sustainedLimiter: sustained,
+		dispatcher:       dispatcher.New(cfg.Extensions.Clitool),
+		registeredTools:  make(map[string]struct{}),
 	}
 	if cfg.Auth.Authenticator != nil {
 		s.verifyCache = auth.NewVerifyCache(makeAuthVerifyFunc(cfg), authVerifyCacheTTL)
 	}
+	s.tokenEntries = buildTokenEntries(cfg.Auth.Tokens)
 
 	// Build the MCP server.
 	s.mcpSrv = server.NewMCPServer(
@@ -179,9 +185,19 @@ func (s *Server) toolEnabled(name string) bool {
 	return !slices.Contains(s.cfg.Tools.Disabled, name)
 }
 
+// trackTool marks name as registered. Returns false if already registered.
+func (s *Server) trackTool(name string) bool {
+	if _, exists := s.registeredTools[name]; exists {
+		return false
+	}
+	s.registeredTools[name] = struct{}{}
+	return true
+}
+
 func (s *Server) registerTools() {
 	// --- list_logs ---
 	if s.toolEnabled("list_logs") {
+		s.trackTool("list_logs")
 		llDesc := loadToolDesc("list_logs")
 		listLogsTool := mcp.NewTool("list_logs",
 			mcp.WithDescription(llDesc.Description),
@@ -191,6 +207,7 @@ func (s *Server) registerTools() {
 
 	// --- read_log ---
 	if s.toolEnabled("read_log") {
+		s.trackTool("read_log")
 		rlDesc := loadToolDesc("read_log")
 		readLogTool := mcp.NewTool("read_log",
 			mcp.WithDescription(rlDesc.Description),
@@ -222,6 +239,7 @@ func (s *Server) registerTools() {
 
 	// --- search_log ---
 	if s.toolEnabled("search_log") {
+		s.trackTool("search_log")
 		slDesc := loadToolDesc("search_log")
 		searchLogTool := mcp.NewTool("search_log",
 			mcp.WithDescription(slDesc.Description),
@@ -253,6 +271,7 @@ func (s *Server) registerTools() {
 
 	// --- check_environment ---
 	if s.toolEnabled("check_environment") {
+		s.trackTool("check_environment")
 		ceDesc := loadToolDesc("check_environment")
 		checkTool := mcp.NewTool("check_environment",
 			mcp.WithDescription(ceDesc.Description),
@@ -262,6 +281,7 @@ func (s *Server) registerTools() {
 
 	// --- check_config ---
 	if s.toolEnabled("check_config") {
+		s.trackTool("check_config")
 		ccDesc := loadToolDesc("check_config")
 		configTool := mcp.NewTool("check_config",
 			mcp.WithDescription(ccDesc.Description),
@@ -271,6 +291,7 @@ func (s *Server) registerTools() {
 
 	// --- log_info ---
 	if s.toolEnabled("log_info") {
+		s.trackTool("log_info")
 		liDesc := loadToolDesc("log_info")
 		logInfoTool := mcp.NewTool("log_info",
 			mcp.WithDescription(liDesc.Description),
@@ -282,8 +303,21 @@ func (s *Server) registerTools() {
 		s.mcpSrv.AddTool(logInfoTool, s.handleLogInfo)
 	}
 
+	// --- server_status ---
+	if s.toolEnabled("server_status") {
+		s.trackTool("server_status")
+		ssDesc := loadToolDesc("server_status")
+		serverStatusTool := mcp.NewTool("server_status",
+			mcp.WithDescription(ssDesc.Description),
+		)
+		s.mcpSrv.AddTool(serverStatusTool, s.handleServerStatus)
+	}
+
 	// --- macros (dynamically loaded from macros dir) ---
 	s.registerMacros()
+
+	// --- extension tools (exposed from configured clitool/rpc extensions) ---
+	s.registerExtensionTools()
 }
 
 // registerMacros loads all macro YAML files from the configured macros directory
@@ -291,10 +325,13 @@ func (s *Server) registerTools() {
 func (s *Server) registerMacros() {
 	dir := s.cfg.Extensions.Macros.Dir
 	macros := macro.LoadDir(dir)
-	runner := macro.NewRunner(s.logMgr, dispatcher.New(s.cfg.Extensions.Clitool))
+	runner := macro.NewRunner(s.logMgr, s.dispatcher)
 
 	for _, m := range macros {
 		if !s.toolEnabled(m.Name) {
+			continue
+		}
+		if !s.trackTool(m.Name) {
 			continue
 		}
 
@@ -324,6 +361,52 @@ func (s *Server) registerMacros() {
 			}
 			return marshalResult(result)
 		})
+	}
+}
+
+// mcpCallerScopes are the scopes forwarded to RPC workers for direct MCP tool calls.
+// All known switchboard scopes are included because the LogMCP token is already
+// verified before this point; Switchboard-level scoping happens at the worker.
+var mcpCallerScopes = []string{"switchboard:read", "switchboard:write", "switchboard:call", "switchboard:sim"}
+
+// registerExtensionTools discovers tools from each configured clitool extension
+// and registers them as MCP tools. Tools whose names are already registered
+// (built-ins or macros) are skipped with a warning.
+func (s *Server) registerExtensionTools() {
+	for _, ext := range s.cfg.Extensions.Clitool {
+		timeout := 5 * time.Second
+		if ext.TimeoutSeconds > 0 {
+			timeout = time.Duration(ext.TimeoutSeconds) * time.Second
+		}
+		tools, err := clitool.List(ext.Command, timeout)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "logmcp: extension %q: list tools failed: %v\n", ext.Name, err)
+			continue
+		}
+		extName := ext.Name
+		for _, td := range tools {
+			registeredName := extName + "_" + td.Name
+			if !s.toolEnabled(registeredName) {
+				continue
+			}
+			if !s.trackTool(registeredName) {
+				fmt.Fprintf(os.Stderr, "logmcp: extension %q: tool %q skipped (name already registered)\n", extName, registeredName)
+				continue
+			}
+			toolDef := td
+			tool := mcp.NewToolWithRawSchema(registeredName, toolDef.Description, toolDef.InputSchema)
+			s.mcpSrv.AddTool(tool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+				params, err := json.Marshal(req.GetArguments())
+				if err != nil {
+					return mcp.NewToolResultError(fmt.Sprintf("marshalling params: %v", err)), nil
+				}
+				result, dispErr := s.dispatcher.Call(ctx, extName, toolDef.Name, "logmcp-mcp", mcpCallerScopes, params)
+				if dispErr != nil {
+					return mcp.NewToolResultError(dispErr.Error()), nil
+				}
+				return marshalResult(result)
+			})
+		}
 	}
 }
 
@@ -591,7 +674,7 @@ func collectDefaults(cfg *config.Config) []optionalParam {
 		defaults = append(defaults, optionalParam{
 			Name:        "tools.disabled",
 			Default:     "[]",
-			Explanation: "List tool names here to hide them from AI clients (e.g. [switchboard_debug] when the extension is not needed).",
+			Explanation: "List tool names here to hide them from AI clients (e.g. [switchboard_status] when that extension tool is not needed).",
 		})
 	}
 	if cfg.Extensions.Macros.Dir == "" {
@@ -638,6 +721,35 @@ func (s *Server) handleCheckConfig(ctx context.Context, req mcp.CallToolRequest)
 	return marshalResult(result)
 }
 
+
+// handleServerStatus implements the server_status tool.
+func (s *Server) handleServerStatus(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	s.mu.RLock()
+	cfg := s.cfg
+	toolCount := len(s.registeredTools)
+	s.mu.RUnlock()
+
+	result := check.Result{OK: true}
+	add := func(name string, ok bool, detail string) {
+		if !ok {
+			result.OK = false
+		}
+		result.Checks = append(result.Checks, check.Item{Name: name, OK: ok, Detail: detail})
+	}
+
+	add("MCP responding", true, fmt.Sprintf("%d tool(s) registered", toolCount))
+
+	for _, ext := range cfg.Extensions.Clitool {
+		tools, err := clitool.List(ext.Command, 3*time.Second)
+		if err != nil {
+			add(fmt.Sprintf("extension %q", ext.Name), false, err.Error())
+		} else {
+			add(fmt.Sprintf("extension %q", ext.Name), true, fmt.Sprintf("%d tool(s)", len(tools)))
+		}
+	}
+
+	return marshalResult(result)
+}
 
 // Start launches the MCP HTTP server, blocking until it exits.
 // It handles SIGTERM and SIGINT by draining active requests (up to 10s) before
@@ -690,6 +802,7 @@ func (s *Server) Start() error {
 		shutCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		_ = httpSrv.Shutdown(shutCtx)
+		s.dispatcher.Close()
 	}()
 
 	// Periodically prune expired entries from rate limiters to prevent unbounded growth
@@ -761,20 +874,29 @@ func newRateLimiters(cfg *config.Config) (burst, sustained *auth.RateLimiter) {
 	return
 }
 
-// buildTokenHandler serves one request using the static bearer-token list from cfg.
+// buildTokenEntries converts a slice of TokenConfig to a slice of auth.TokenEntry.
+// The result is cached on the Server and recomputed only on config reload.
+func buildTokenEntries(tokens []config.TokenConfig) []auth.TokenEntry {
+	entries := make([]auth.TokenEntry, len(tokens))
+	for i, t := range tokens {
+		entries[i] = auth.TokenEntry{Name: t.Name, Value: t.Token, Scopes: t.Scopes}
+	}
+	return entries
+}
+
+// buildTokenHandler serves one request using the pre-built bearer-token list from s.
 func buildTokenHandler(s *Server, cfg *config.Config, burst, sustained *auth.RateLimiter, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		getIP := func(r *http.Request) string { return extractClientIP(r, cfg.Proxy.TrustedProxy) }
-		entries := make([]auth.TokenEntry, len(cfg.Auth.Tokens))
-		for i, t := range cfg.Auth.Tokens {
-			entries[i] = auth.TokenEntry{Name: t.Name, Value: t.Token, Scopes: t.Scopes}
-		}
+		s.mu.RLock()
+		entries := s.tokenEntries
+		s.mu.RUnlock()
 		auth.BearerTokenMiddleware(entries, getIP, burst, sustained)(next).ServeHTTP(w, r)
 	})
 }
 
 // buildAuthenticatorHandler serves one request by delegating auth to the external authenticator.
-func buildAuthenticatorHandler(s *Server, cfg *config.Config, burst, sustained *auth.RateLimiter, verifyCache *auth.VerifyCache, next http.Handler) http.Handler {
+func buildAuthenticatorHandler(cfg *config.Config, burst, sustained *auth.RateLimiter, verifyCache *auth.VerifyCache, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		getIP := func(r *http.Request) string { return extractClientIP(r, cfg.Proxy.TrustedProxy) }
 		auth.AuthenticatorMiddleware(verifyCache.Verify, "logmcp:read", getIP, burst, sustained)(next).ServeHTTP(w, r)
@@ -796,7 +918,7 @@ func (s *Server) buildHandler() http.Handler {
 		s.mu.RUnlock()
 
 		if cfg.Auth.Authenticator != nil {
-			buildAuthenticatorHandler(s, cfg, burst, sustained, verifyCache, s.httpSrv).ServeHTTP(w, r)
+			buildAuthenticatorHandler(cfg, burst, sustained, verifyCache, s.httpSrv).ServeHTTP(w, r)
 			return
 		}
 		buildTokenHandler(s, cfg, burst, sustained, s.httpSrv).ServeHTTP(w, r)
@@ -811,8 +933,27 @@ func (s *Server) buildHandler() http.Handler {
 	mux.HandleFunc(prefix+"/healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
+	mux.HandleFunc(prefix+"/status", s.handleStatus)
 
 	return mux
+}
+
+// handleStatus returns a JSON health report. No authentication required so
+// the endpoint works even when auth is misconfigured.
+func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
+	result := check.Result{
+		OK: true,
+		Checks: []check.Item{
+			{Name: "server running", OK: true, Detail: "HTTP handler responding"},
+		},
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if !result.OK {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	} else {
+		w.WriteHeader(http.StatusOK)
+	}
+	_ = json.NewEncoder(w).Encode(result)
 }
 
 // Reload loads a new config from path and applies it without restarting the server.
@@ -828,6 +969,7 @@ func (s *Server) Reload(path string) error {
 		oldCmd = s.cfg.Auth.Authenticator.Command
 	}
 	s.cfg = newCfg
+	s.tokenEntries = buildTokenEntries(newCfg.Auth.Tokens)
 	s.burstLimiter, s.sustainedLimiter = newRateLimiters(newCfg)
 	s.logMgr.Update(newCfg.Logs.Whitelist, newCfg.Logs.Blacklist, newCfg.Logs.Journald)
 	if newCfg.Auth.Authenticator != nil {

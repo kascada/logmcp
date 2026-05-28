@@ -12,19 +12,24 @@ import (
 	"github.com/kleist-dev/logmcp/internal/logs"
 )
 
-const stepTimeout = 30 * time.Second
+const defaultStepTimeout = 30 * time.Second
 
 const defaultWindowSeconds = 30.0
 
-// stepContext returns a child context with the standard step timeout applied.
-func stepContext(parent context.Context) (context.Context, context.CancelFunc) {
-	return context.WithTimeout(parent, stepTimeout)
+// stepContext returns a child context with a step timeout applied.
+// timeoutSeconds specifies the timeout in seconds; 0 means use the default (30 s).
+func stepContext(parent context.Context, timeoutSeconds int) (context.Context, context.CancelFunc) {
+	d := defaultStepTimeout
+	if timeoutSeconds > 0 {
+		d = time.Duration(timeoutSeconds) * time.Second
+	}
+	return context.WithTimeout(parent, d)
 }
 
 // execExtension executes an extension step by calling a registered clitool/rpc extension.
 // All args except 'name' and 'tool' are forwarded as JSON params to the extension tool.
-func execExtension(ctx context.Context, step StepDef, params map[string]string, stepResults map[string]any, d *dispatcher.Dispatcher) (any, error) {
-	ctx, cancel := stepContext(ctx)
+func execExtension(ctx context.Context, step StepDef, params map[string]string, stepResults map[string]any, d *dispatcher.Dispatcher, timeoutSeconds int) (any, error) {
+	ctx, cancel := stepContext(ctx, timeoutSeconds)
 	defer cancel()
 
 	if d == nil {
@@ -55,12 +60,12 @@ func execExtension(ctx context.Context, step StepDef, params map[string]string, 
 		return nil, fmt.Errorf("extension step %q: marshalling params: %w", step.ID, err)
 	}
 
-	return d.Call(ctx, extName, toolName, paramsJSON)
+	return d.Call(ctx, extName, toolName, "logmcp-macro", []string{"switchboard:read"}, paramsJSON)
 }
 
 // execReadFile executes a read_file step, respecting logs.Manager access control.
-func execReadFile(ctx context.Context, step StepDef, params map[string]string, stepResults map[string]any, logMgr *logs.Manager) (any, error) {
-	ctx, cancel := stepContext(ctx)
+func execReadFile(ctx context.Context, step StepDef, params map[string]string, stepResults map[string]any, logMgr *logs.Manager, timeoutSeconds int) (any, error) {
+	ctx, cancel := stepContext(ctx, timeoutSeconds)
 	defer cancel()
 
 	resolvedArgs := interpolateArgs(step.Args, params, stepResults)
@@ -116,8 +121,8 @@ func execReadFile(ctx context.Context, step StepDef, params map[string]string, s
 }
 
 // execJournalctl executes a journalctl step.
-func execJournalctl(ctx context.Context, step StepDef, params map[string]string, stepResults map[string]any) (any, error) {
-	ctx, cancel := stepContext(ctx)
+func execJournalctl(ctx context.Context, step StepDef, params map[string]string, stepResults map[string]any, timeoutSeconds int) (any, error) {
+	ctx, cancel := stepContext(ctx, timeoutSeconds)
 	defer cancel()
 
 	resolvedArgs := interpolateArgs(step.Args, params, stepResults)

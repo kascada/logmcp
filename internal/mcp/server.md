@@ -4,7 +4,7 @@ LogMCP provides read-only access to server-side log files and optional applicati
 
 - **Log access** — list, read, and search log files that the server administrator has explicitly whitelisted. No files outside the whitelist are accessible.
 - **Environment checks** — verify that the server and all its configured backends are reachable and correctly configured.
-- **Extensions** — optional domain-specific tools enabled by server configuration (e.g. `switchboard_debug` for Switchboard call diagnostics).
+- **Extensions** — optional domain-specific tools enabled by server configuration. Extension tools are prefixed with the extension name (e.g. `switchboard_status`, `switchboard_channels` for a `switchboard` extension).
 
 ## How to navigate logs
 

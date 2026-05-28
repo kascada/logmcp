@@ -32,6 +32,9 @@ type MacroDef struct {
 	Description string               `yaml:"description"`
 	Parameters  map[string]ParamDef  `yaml:"parameters"`
 	Steps       []StepDef            `yaml:"steps"`
+	// TimeoutSeconds overrides the per-step timeout for this macro.
+	// 0 means "use the default" (30 seconds).
+	TimeoutSeconds int `yaml:"timeout_seconds"`
 }
 
 // validate checks that a MacroDef has all required fields and that each step

@@ -36,14 +36,12 @@ type rpcCaller struct {
 
 // Call sends a single RPC request over Redis and waits for the reply.
 //
-// redisAddr is the Redis server address (e.g. "127.0.0.1:6379").
+// rdb is a shared *goredis.Client managed by the caller (e.g. cached per extension address).
 // toolName is the unprefixed tool name (e.g. "status").
 // callerName and callerScopes are taken from the already-resolved MCP token context.
 // params is the raw JSON parameters object (may be nil or "null").
 // timeout governs both the expires_at field and the BLPOP wait duration.
-//
-// A new redis.Client is created per call; go-redis handles connection pooling internally.
-func Call(ctx context.Context, redisAddr, toolName, callerName string, callerScopes []string, params json.RawMessage, timeout time.Duration) (*clitool.CallResult, error) {
+func Call(ctx context.Context, rdb *goredis.Client, toolName, callerName string, callerScopes []string, params json.RawMessage, timeout time.Duration) (*clitool.CallResult, error) {
 	replyKey := "sb:rpc:reply:" + uuid.New().String()
 	expiresAt := float64(time.Now().Add(timeout).UnixMilli()) / 1000.0
 
@@ -68,11 +66,6 @@ func Call(ctx context.Context, redisAddr, toolName, callerName string, callerSco
 	if err != nil {
 		return nil, fmt.Errorf("rpc: marshalling request: %w", err)
 	}
-
-	rdb := goredis.NewClient(&goredis.Options{
-		Addr: redisAddr,
-	})
-	defer rdb.Close() //nolint:errcheck
 
 	if err := rdb.LPush(ctx, reqKey, string(reqJSON)).Err(); err != nil {
 		return nil, fmt.Errorf("rpc: LPUSH %s: %w", reqKey, err)

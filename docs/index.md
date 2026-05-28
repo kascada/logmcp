@@ -11,6 +11,7 @@ This is the entry point for all LogMCP documentation available as MCP resources.
 | `logmcp://docs/logging` | Logging and audit reference: syslog format, fail2ban integration |
 | `logmcp://docs/ansible` | Ansible role reference: automated deployment via the official Debian package |
 | `logmcp://docs/macro` | Macro reference: define custom MCP tools in YAML |
+| `logmcp://docs/examples` | Extension examples: clitool + auth, RPC transport, macros |
 
 ## How to access
 
@@ -23,3 +24,11 @@ Fetch any resource by its URI via the MCP protocol. Example: to read the configu
 - **Diagnosing auth or audit issues?** See `logmcp://docs/logging`.
 - **Checking the current server config at runtime?** Use the `check_config` MCP tool.
 - **Defining custom MCP tools from YAML?** See `logmcp://docs/macro`.
+
+## Diagnostic tools
+
+| What | How |
+|------|-----|
+| MCP layer responding? Extensions active? | `server_status` MCP tool (requires auth) |
+| Full environment check (TLS, files, systemd) | `check_environment` MCP tool (requires auth) |
+| HTTP server alive? (no auth, no MCP) | `GET /status` — returns `{"ok":true,"checks":[...]}` |

@@ -156,7 +156,8 @@ URL subpath (e.g. `/logmcp`). Empty means serve at the domain root. Used in `cli
 | Path | Auth required | Purpose |
 |------|--------------|---------|
 | `<prefix>/mcp` | Yes | MCP protocol endpoint |
-| `<prefix>/healthz` | No | Health check — returns `200 OK`; use for load balancers, Docker `HEALTHCHECK`, or uptime monitors |
+| `<prefix>/healthz` | No | Minimal health check — returns `200 OK` with no body; use for load balancers, Docker `HEALTHCHECK`, or uptime monitors |
+| `<prefix>/status` | No | Structured health check — returns `{"ok":true,"checks":[...]}` JSON; use to diagnose whether the HTTP server is up when the MCP layer is unresponsive |
 
 ### `proxy.caddy`
 
@@ -196,6 +197,28 @@ auth:
 **Legacy migration:** configs with the old `auth.token: "<value>"` single-field format are automatically migrated on load to a token named `"default"` with scope `["read"]`. Run `logmcp setup` to persist the new format.
 
 Token management without manual YAML editing: `logmcp token list|add|remove|renew`.
+
+### `auth.authenticator`
+
+| Type | Default |
+|------|---------|
+| object \| absent | absent (disabled) |
+
+Alternative to `auth.tokens`: delegates token verification to an external CLI program that follows the [clitool verify interface](CLITOOL.md). When set, `auth.tokens` is not required and is ignored.
+
+```yaml
+auth:
+  authenticator:
+    command: /usr/local/bin/my-auth-tool
+    timeout_seconds: 5
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `command` | string | **required** | Full path to the authenticator executable. |
+| `timeout_seconds` | int | `10` | Per-call timeout for verify invocations. |
+
+Either `auth.tokens` or `auth.authenticator` must be configured — having neither is a validation error.
 
 ---
 
@@ -340,7 +363,7 @@ Write every MCP tool call and denied access to syslog. Log content and search pa
 |------|---------|
 | list of strings | `[]` |
 
-MCP tool names to hide from AI clients. Useful for restricting which tools a particular deployment exposes. Valid values: `list_logs`, `read_log`, `search_log`, `log_info`, `check_environment`. Tools registered by clitool extensions (e.g. `switchboard_status`) can also be listed here.
+MCP tool names to hide from AI clients. Useful for restricting which tools a particular deployment exposes. Built-in values: `list_logs`, `read_log`, `search_log`, `log_info`, `check_environment`, `check_config`, `server_status`. Extension tools use their prefixed name (e.g. `switchboard_status`) and can also be listed here.
 
 Example — expose only listing and reading, no search:
 
@@ -384,4 +407,24 @@ extensions:
 If a configured extension cannot be reached at startup (program not found, non-zero exit, or invalid JSON output from `list`), LogMCP refuses to start. This is intentional — an unreachable extension is a configuration error.
 
 See [CLITOOL.md](CLITOOL.md) for the full interface specification including the `list`/`call` protocol, auth flow, and error codes.
+
+### `extensions.macros`
+
+| Type | Default |
+|------|---------|
+| object | `dir: ""` (disabled) |
+
+Configures the macro engine. Macros are YAML files that define reusable prompt shortcuts or composite tool sequences.
+
+```yaml
+extensions:
+  macros:
+    dir: /etc/logmcp/macros
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `dir` | string | `""` | Directory scanned for `*.yaml` macro files at startup. Relative paths are resolved against the working directory. An empty string disables macro loading. |
+
+Changes to `extensions.macros` require a full restart — `systemctl reload` does not pick them up.
 

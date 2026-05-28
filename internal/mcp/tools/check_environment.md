@@ -10,6 +10,6 @@ Use to verify that the LogMCP server is configured correctly and that all config
 
 Array of check result objects, each with:
 
-- `name` — check identifier (e.g. `config`, `tls`, `whitelist`, `syslog`, `mysql`)
+- `name` — check identifier (e.g. `config`, `tls`, `whitelist`, `syslog`)
 - `ok` — true if the check passed, false if it failed
 - `detail` — human-readable description of the result or error (omitted when empty)

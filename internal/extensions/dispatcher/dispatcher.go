@@ -5,31 +5,51 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sync"
 	"time"
+
+	goredis "github.com/redis/go-redis/v9"
 
 	"github.com/kleist-dev/logmcp/internal/config"
 	"github.com/kleist-dev/logmcp/internal/extensions/clitool"
 	"github.com/kleist-dev/logmcp/internal/extensions/rpc"
 )
 
-const (
-	defaultTimeout = 10 * time.Second
-	callerName     = "logmcp-macro"
-)
+const defaultTimeout = 10 * time.Second
 
 // Dispatcher routes extension tool calls to the correct transport.
+// For RPC extensions a *goredis.Client is cached per Redis address so that
+// the connection pool is reused across calls instead of being torn down
+// and rebuilt on every invocation.
 type Dispatcher struct {
-	exts []config.CltoolExtension
+	exts       []config.CltoolExtension
+	rpcClients map[string]*goredis.Client
+	mu         sync.Mutex
 }
 
 // New creates a Dispatcher from the configured clitool extensions.
 func New(exts []config.CltoolExtension) *Dispatcher {
-	return &Dispatcher{exts: exts}
+	return &Dispatcher{
+		exts:       exts,
+		rpcClients: make(map[string]*goredis.Client),
+	}
+}
+
+// Close releases all cached Redis clients. It should be called once the
+// Dispatcher is no longer needed (e.g. during server shutdown).
+func (d *Dispatcher) Close() {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	for _, rdb := range d.rpcClients {
+		rdb.Close() //nolint:errcheck
+	}
+	d.rpcClients = make(map[string]*goredis.Client)
 }
 
 // Call invokes toolName on the named extension and returns the decoded result.
+// callerName and callerScopes are forwarded to the RPC worker as the caller identity.
 // params is a raw JSON object passed as-is to the extension tool.
-func (d *Dispatcher) Call(ctx context.Context, extName, toolName string, params json.RawMessage) (any, error) {
+func (d *Dispatcher) Call(ctx context.Context, extName, toolName, callerName string, callerScopes []string, params json.RawMessage) (any, error) {
 	ext, ok := d.find(extName)
 	if !ok {
 		return nil, fmt.Errorf("extension %q not configured", extName)
@@ -48,8 +68,15 @@ func (d *Dispatcher) Call(ctx context.Context, extName, toolName string, params 
 		if addr == "" {
 			addr = "127.0.0.1:6379"
 		}
+		d.mu.Lock()
+		rdb, ok := d.rpcClients[addr]
+		if !ok {
+			rdb = goredis.NewClient(&goredis.Options{Addr: addr})
+			d.rpcClients[addr] = rdb
+		}
+		d.mu.Unlock()
 		var err error
-		result, err = rpc.Call(ctx, addr, toolName, callerName, []string{"switchboard:read"}, params, timeout)
+		result, err = rpc.Call(ctx, rdb, toolName, callerName, callerScopes, params, timeout)
 		if err != nil {
 			return nil, fmt.Errorf("extension %q rpc call %q: %w", extName, toolName, err)
 		}

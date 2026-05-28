@@ -56,6 +56,7 @@ steps:                  # One or more steps (required)
 | `description` | yes | Human-readable description shown to the AI client. |
 | `parameters` | no | Named string parameters the AI client can pass in. |
 | `steps` | yes | List of steps to execute, in order. |
+| `timeout_seconds` | no | Per-step timeout in seconds. Applies to every step in this macro. Default: `30`. |
 
 ### Parameter definition
 
@@ -81,7 +82,7 @@ Each step has:
 
 Steps execute sequentially. If a step fails, execution stops and the partial result (including an `error` key for the failed step) is returned.
 
-Each step has a **30-second timeout**.
+Each step has a timeout; the default is **30 seconds**. Override it for the whole macro via `timeout_seconds` (see [Top-level fields](#top-level-fields)).
 
 ---
 

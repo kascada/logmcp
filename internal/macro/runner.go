@@ -38,11 +38,11 @@ func (r *Runner) Run(ctx context.Context, def MacroDef, params map[string]string
 
 		switch step.Internal {
 		case "extension":
-			out, err = execExtension(ctx, step, params, result, r.dispatcher)
+			out, err = execExtension(ctx, step, params, result, r.dispatcher, def.TimeoutSeconds)
 		case "read_file":
-			out, err = execReadFile(ctx, step, params, result, r.logMgr)
+			out, err = execReadFile(ctx, step, params, result, r.logMgr, def.TimeoutSeconds)
 		case "journalctl":
-			out, err = execJournalctl(ctx, step, params, result)
+			out, err = execJournalctl(ctx, step, params, result, def.TimeoutSeconds)
 		default:
 			err = fmt.Errorf("unknown internal step type %q", step.Internal)
 		}
