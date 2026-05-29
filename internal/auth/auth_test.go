@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -14,10 +15,10 @@ func captureHandler(name *string) http.Handler {
 	})
 }
 
-func TestBearerTokenMiddleware(t *testing.T) {
+func TestMiddleware_StaticResolver(t *testing.T) {
 	tokens := []TokenEntry{
-		{Name: "alice", Value: "secret-alice"},
-		{Name: "bob", Value: "secret-bob"},
+		{Name: "alice", Value: "secret-alice", Scopes: []string{"logmcp:read"}},
+		{Name: "bob", Value: "secret-bob", Scopes: []string{"logmcp:read"}},
 	}
 
 	tests := []struct {
@@ -42,7 +43,7 @@ func TestBearerTokenMiddleware(t *testing.T) {
 				req.Header.Set("Authorization", tc.header)
 			}
 			rec := httptest.NewRecorder()
-			BearerTokenMiddleware(tokens, nil, nil, nil)(captureHandler(&gotName)).ServeHTTP(rec, req)
+			Middleware(StaticResolver(tokens), nil, nil, nil)(captureHandler(&gotName)).ServeHTTP(rec, req)
 
 			if rec.Code != tc.wantStatus {
 				t.Errorf("status = %d, want %d", rec.Code, tc.wantStatus)
@@ -54,20 +55,20 @@ func TestBearerTokenMiddleware(t *testing.T) {
 	}
 }
 
-// TestBearerTokenMiddleware_NoEarlyExit verifies the constant-time property:
+// TestStaticResolver_NoEarlyExit verifies the constant-time property:
 // all tokens are always iterated, so a match at the end of the list still succeeds.
-func TestBearerTokenMiddleware_NoEarlyExit(t *testing.T) {
+func TestStaticResolver_NoEarlyExit(t *testing.T) {
 	tokens := []TokenEntry{
-		{Name: "a", Value: "aaa"},
-		{Name: "b", Value: "bbb"},
-		{Name: "c", Value: "ccc"},
+		{Name: "a", Value: "aaa", Scopes: []string{"logmcp:read"}},
+		{Name: "b", Value: "bbb", Scopes: []string{"logmcp:read"}},
+		{Name: "c", Value: "ccc", Scopes: []string{"logmcp:read"}},
 	}
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.Header.Set("Authorization", "Bearer ccc")
 	rec := httptest.NewRecorder()
 
 	var gotName string
-	BearerTokenMiddleware(tokens, nil, nil, nil)(captureHandler(&gotName)).ServeHTTP(rec, req)
+	Middleware(StaticResolver(tokens), nil, nil, nil)(captureHandler(&gotName)).ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
@@ -77,18 +78,78 @@ func TestBearerTokenMiddleware_NoEarlyExit(t *testing.T) {
 	}
 }
 
-func TestBearerTokenMiddleware_EmptyList(t *testing.T) {
+func TestMiddleware_EmptyTokenList(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.Header.Set("Authorization", "Bearer anything")
 	rec := httptest.NewRecorder()
 
-	BearerTokenMiddleware(nil, nil, nil, nil)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	Middleware(StaticResolver(nil), nil, nil, nil)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})).ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusUnauthorized {
 		t.Errorf("empty token list: status = %d, want 401", rec.Code)
 	}
+}
+
+func TestMiddleware_ScopesInContext(t *testing.T) {
+	tokens := []TokenEntry{
+		{Name: "alice", Value: "secret-alice", Scopes: []string{"logmcp:read", "sb:read"}},
+	}
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("Authorization", "Bearer secret-alice")
+	rec := httptest.NewRecorder()
+
+	var gotScopes []string
+	Middleware(StaticResolver(tokens), nil, nil, nil)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotScopes = TokenScopesFromCtx(r.Context())
+		w.WriteHeader(http.StatusOK)
+	})).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if len(gotScopes) != 2 || gotScopes[0] != "logmcp:read" || gotScopes[1] != "sb:read" {
+		t.Errorf("scopes in context = %v, want [logmcp:read sb:read]", gotScopes)
+	}
+}
+
+func TestRequireScope(t *testing.T) {
+	ok := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
+
+	t.Run("scope present", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		ctx := req.Context()
+		ctx = withScopes(ctx, []string{"logmcp:read", "sb:read"})
+		rec := httptest.NewRecorder()
+		RequireScope("logmcp:read")(ok).ServeHTTP(rec, req.WithContext(ctx))
+		if rec.Code != http.StatusOK {
+			t.Errorf("status = %d, want 200", rec.Code)
+		}
+	})
+
+	t.Run("scope missing", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		ctx := withScopes(req.Context(), []string{"sb:read"})
+		rec := httptest.NewRecorder()
+		RequireScope("logmcp:read")(ok).ServeHTTP(rec, req.WithContext(ctx))
+		if rec.Code != http.StatusForbidden {
+			t.Errorf("status = %d, want 403", rec.Code)
+		}
+	})
+
+	t.Run("no scopes in context", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		rec := httptest.NewRecorder()
+		RequireScope("logmcp:read")(ok).ServeHTTP(rec, req)
+		if rec.Code != http.StatusForbidden {
+			t.Errorf("status = %d, want 403", rec.Code)
+		}
+	})
+}
+
+func withScopes(ctx context.Context, scopes []string) context.Context {
+	return context.WithValue(ctx, tokenScopesKey{}, scopes)
 }
 
 func blockedLimiter() *RateLimiter {
@@ -101,8 +162,8 @@ func clearLimiter() *RateLimiter {
 	return NewRateLimiter(5, time.Minute)
 }
 
-func TestBearerTokenMiddleware_TwoTierRateLimit(t *testing.T) {
-	validTokens := []TokenEntry{{Name: "alice", Value: "secret-alice"}}
+func TestMiddleware_TwoTierRateLimit(t *testing.T) {
+	validTokens := []TokenEntry{{Name: "alice", Value: "secret-alice", Scopes: []string{"logmcp:read"}}}
 
 	tests := []struct {
 		name       string
@@ -161,7 +222,7 @@ func TestBearerTokenMiddleware_TwoTierRateLimit(t *testing.T) {
 			req.Header.Set("Authorization", tc.authHeader)
 			rec := httptest.NewRecorder()
 
-			BearerTokenMiddleware(validTokens, nil, tc.burst, tc.sustained)(
+			Middleware(StaticResolver(validTokens), nil, tc.burst, tc.sustained)(
 				http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 					w.WriteHeader(http.StatusOK)
 				}),
@@ -174,23 +235,23 @@ func TestBearerTokenMiddleware_TwoTierRateLimit(t *testing.T) {
 	}
 }
 
-func TestBearerTokenMiddleware_RecordFailureWritesToBothLimiters(t *testing.T) {
+func TestMiddleware_RecordFailureWritesToBothLimiters(t *testing.T) {
 	burst := NewRateLimiter(2, time.Minute)
 	sustained := NewRateLimiter(2, time.Minute)
-	tokens := []TokenEntry{{Name: "alice", Value: "secret-alice"}}
+	tokens := []TokenEntry{{Name: "alice", Value: "secret-alice", Scopes: []string{"logmcp:read"}}}
 
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	req.Header.Set("Authorization", "Bearer invalid_token")
-	rec := httptest.NewRecorder()
+	sendInvalid := func() int {
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		req.Header.Set("Authorization", "Bearer invalid_token")
+		rec := httptest.NewRecorder()
+		Middleware(StaticResolver(tokens), nil, burst, sustained)(
+			http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) }),
+		).ServeHTTP(rec, req)
+		return rec.Code
+	}
 
-	BearerTokenMiddleware(tokens, nil, burst, sustained)(
-		http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-			w.WriteHeader(http.StatusOK)
-		}),
-	).ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusUnauthorized {
-		t.Fatalf("status = %d, want 401", rec.Code)
+	if code := sendInvalid(); code != http.StatusUnauthorized {
+		t.Fatalf("first attempt: status = %d, want 401", code)
 	}
 
 	ip := "192.0.2.1"
@@ -201,15 +262,7 @@ func TestBearerTokenMiddleware_RecordFailureWritesToBothLimiters(t *testing.T) {
 		t.Error("sustained should not be blocked after one failure with threshold 2")
 	}
 
-	req2 := httptest.NewRequest(http.MethodGet, "/", nil)
-	req2.Header.Set("Authorization", "Bearer invalid_token")
-	rec2 := httptest.NewRecorder()
-
-	BearerTokenMiddleware(tokens, nil, burst, sustained)(
-		http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-			w.WriteHeader(http.StatusOK)
-		}),
-	).ServeHTTP(rec2, req2)
+	sendInvalid()
 
 	if !burst.IsBlocked(ip) {
 		t.Error("burst should be blocked after two failures with threshold 2")

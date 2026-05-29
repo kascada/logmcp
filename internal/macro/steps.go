@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kleist-dev/logmcp/internal/auth"
 	"github.com/kleist-dev/logmcp/internal/extensions/dispatcher"
 	"github.com/kleist-dev/logmcp/internal/logs"
 )
@@ -60,7 +61,7 @@ func execExtension(ctx context.Context, step StepDef, params map[string]string, 
 		return nil, fmt.Errorf("extension step %q: marshalling params: %w", step.ID, err)
 	}
 
-	return d.Call(ctx, extName, toolName, "logmcp-macro", []string{"switchboard:read"}, paramsJSON)
+	return d.Call(ctx, extName, toolName, "logmcp-macro", auth.TokenScopesFromCtx(ctx), paramsJSON)
 }
 
 // execReadFile executes a read_file step, respecting logs.Manager access control.

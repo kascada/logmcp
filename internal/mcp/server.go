@@ -194,6 +194,19 @@ func (s *Server) trackTool(name string) bool {
 	return true
 }
 
+// withScope wraps a tool handler, returning a scope-denied error if the caller's
+// context does not contain the required scope.
+func withScope(scope string, h func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error)) func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		for _, s := range auth.TokenScopesFromCtx(ctx) {
+			if s == scope {
+				return h(ctx, req)
+			}
+		}
+		return mcp.NewToolResultError("missing required scope: " + scope), nil
+	}
+}
+
 func (s *Server) registerTools() {
 	// --- list_logs ---
 	if s.toolEnabled("list_logs") {
@@ -202,7 +215,7 @@ func (s *Server) registerTools() {
 		listLogsTool := mcp.NewTool("list_logs",
 			mcp.WithDescription(llDesc.Description),
 		)
-		s.mcpSrv.AddTool(listLogsTool, s.handleListLogs)
+		s.mcpSrv.AddTool(listLogsTool, withScope("logmcp:read", s.handleListLogs))
 	}
 
 	// --- read_log ---
@@ -234,7 +247,7 @@ func (s *Server) registerTools() {
 				mcp.Description(rlDesc.Params["until"]),
 			),
 		)
-		s.mcpSrv.AddTool(readLogTool, s.handleReadLog)
+		s.mcpSrv.AddTool(readLogTool, withScope("logmcp:read", s.handleReadLog))
 	}
 
 	// --- search_log ---
@@ -266,7 +279,7 @@ func (s *Server) registerTools() {
 				mcp.DefaultNumber(0),
 			),
 		)
-		s.mcpSrv.AddTool(searchLogTool, s.handleSearchLog)
+		s.mcpSrv.AddTool(searchLogTool, withScope("logmcp:read", s.handleSearchLog))
 	}
 
 	// --- check_environment ---
@@ -276,7 +289,7 @@ func (s *Server) registerTools() {
 		checkTool := mcp.NewTool("check_environment",
 			mcp.WithDescription(ceDesc.Description),
 		)
-		s.mcpSrv.AddTool(checkTool, s.handleCheckEnvironment)
+		s.mcpSrv.AddTool(checkTool, withScope("logmcp:read", s.handleCheckEnvironment))
 	}
 
 	// --- check_config ---
@@ -286,7 +299,7 @@ func (s *Server) registerTools() {
 		configTool := mcp.NewTool("check_config",
 			mcp.WithDescription(ccDesc.Description),
 		)
-		s.mcpSrv.AddTool(configTool, s.handleCheckConfig)
+		s.mcpSrv.AddTool(configTool, withScope("logmcp:read", s.handleCheckConfig))
 	}
 
 	// --- log_info ---
@@ -300,7 +313,7 @@ func (s *Server) registerTools() {
 				mcp.Description(liDesc.Params["path"]),
 			),
 		)
-		s.mcpSrv.AddTool(logInfoTool, s.handleLogInfo)
+		s.mcpSrv.AddTool(logInfoTool, withScope("logmcp:read", s.handleLogInfo))
 	}
 
 	// --- server_status ---
@@ -310,7 +323,7 @@ func (s *Server) registerTools() {
 		serverStatusTool := mcp.NewTool("server_status",
 			mcp.WithDescription(ssDesc.Description),
 		)
-		s.mcpSrv.AddTool(serverStatusTool, s.handleServerStatus)
+		s.mcpSrv.AddTool(serverStatusTool, withScope("logmcp:read", s.handleServerStatus))
 	}
 
 	// --- macros (dynamically loaded from macros dir) ---
@@ -347,27 +360,19 @@ func (s *Server) registerMacros() {
 		}
 
 		tool := mcp.NewTool(macroDef.Name, opts...)
-		s.mcpSrv.AddTool(tool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-			// Collect all string parameters from the MCP call.
+		s.mcpSrv.AddTool(tool, withScope("logmcp:read", func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			params := make(map[string]string)
 			for paramName := range macroDef.Parameters {
 				params[paramName] = req.GetString(paramName, "")
 			}
-
 			result, err := runner.Run(ctx, macroDef, params)
 			if err != nil {
-				// Return the partial result as JSON, with the step error embedded.
 				return marshalResult(result)
 			}
 			return marshalResult(result)
-		})
+		}))
 	}
 }
-
-// mcpCallerScopes are the scopes forwarded to RPC workers for direct MCP tool calls.
-// All known switchboard scopes are included because the LogMCP token is already
-// verified before this point; Switchboard-level scoping happens at the worker.
-var mcpCallerScopes = []string{"switchboard:read", "switchboard:write", "switchboard:call", "switchboard:sim"}
 
 // registerExtensionTools discovers tools from each configured clitool extension
 // and registers them as MCP tools. Tools whose names are already registered
@@ -400,7 +405,7 @@ func (s *Server) registerExtensionTools() {
 				if err != nil {
 					return mcp.NewToolResultError(fmt.Sprintf("marshalling params: %v", err)), nil
 				}
-				result, dispErr := s.dispatcher.Call(ctx, extName, toolDef.Name, "logmcp-mcp", mcpCallerScopes, params)
+				result, dispErr := s.dispatcher.Call(ctx, extName, toolDef.Name, "logmcp-mcp", auth.TokenScopesFromCtx(ctx), params)
 				if dispErr != nil {
 					return mcp.NewToolResultError(dispErr.Error()), nil
 				}
@@ -884,25 +889,6 @@ func buildTokenEntries(tokens []config.TokenConfig) []auth.TokenEntry {
 	return entries
 }
 
-// buildTokenHandler serves one request using the pre-built bearer-token list from s.
-func buildTokenHandler(s *Server, cfg *config.Config, burst, sustained *auth.RateLimiter, next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		getIP := func(r *http.Request) string { return extractClientIP(r, cfg.Proxy.TrustedProxy) }
-		s.mu.RLock()
-		entries := s.tokenEntries
-		s.mu.RUnlock()
-		auth.BearerTokenMiddleware(entries, getIP, burst, sustained)(next).ServeHTTP(w, r)
-	})
-}
-
-// buildAuthenticatorHandler serves one request by delegating auth to the external authenticator.
-func buildAuthenticatorHandler(cfg *config.Config, burst, sustained *auth.RateLimiter, verifyCache *auth.VerifyCache, next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		getIP := func(r *http.Request) string { return extractClientIP(r, cfg.Proxy.TrustedProxy) }
-		auth.AuthenticatorMiddleware(verifyCache.Verify, "logmcp:read", getIP, burst, sustained)(next).ServeHTTP(w, r)
-	})
-}
-
 // buildHandler wraps the MCP StreamableHTTPServer with the auth middleware.
 // Auth tokens are read on every request so they reflect the latest reloaded config.
 func (s *Server) buildHandler() http.Handler {
@@ -912,16 +898,22 @@ func (s *Server) buildHandler() http.Handler {
 		r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)
 		s.mu.RLock()
 		cfg := s.cfg
+		entries := s.tokenEntries
 		burst := s.burstLimiter
 		sustained := s.sustainedLimiter
 		verifyCache := s.verifyCache
 		s.mu.RUnlock()
 
+		getIP := func(r *http.Request) string { return extractClientIP(r, cfg.Proxy.TrustedProxy) }
+
+		var resolve auth.VerifyFunc
 		if cfg.Auth.Authenticator != nil {
-			buildAuthenticatorHandler(cfg, burst, sustained, verifyCache, s.httpSrv).ServeHTTP(w, r)
-			return
+			resolve = verifyCache.Verify
+		} else {
+			resolve = auth.StaticResolver(entries)
 		}
-		buildTokenHandler(s, cfg, burst, sustained, s.httpSrv).ServeHTTP(w, r)
+
+		auth.Middleware(resolve, getIP, burst, sustained)(s.httpSrv).ServeHTTP(w, r)
 	})
 
 	s.mu.RLock()
