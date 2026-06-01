@@ -104,10 +104,10 @@ func ragIndex(docsFS embed.FS, onlySource string) error {
 	fmt.Printf("Redis:   %s\n\n", cfg.RAG.RedisAddr)
 
 	if err := ollama.Ping(ctx); err != nil {
-		return fmt.Errorf("Ollama: %w", err)
+		return fmt.Errorf("ollama: %w", err)
 	}
 	if err := store.Ping(ctx); err != nil {
-		return fmt.Errorf("Redis: %w", err)
+		return fmt.Errorf("redis: %w", err)
 	}
 
 	indexer := &rag.Indexer{

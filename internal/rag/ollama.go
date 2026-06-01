@@ -48,7 +48,7 @@ func (c *OllamaClient) Embed(ctx context.Context, text string) ([]float32, error
 	if err != nil {
 		return nil, fmt.Errorf("ollama: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("ollama embed: status %d", resp.StatusCode)
@@ -74,7 +74,7 @@ func (c *OllamaClient) Ping(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("ollama unreachable: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("ollama: status %d", resp.StatusCode)
