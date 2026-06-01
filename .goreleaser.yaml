@@ -1,0 +1,55 @@
+version: 2
+
+before:
+  hooks:
+    - cp packaging/logmcp.service cmd/assets/logmcp.service
+
+builds:
+  - env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    main: .
+    binary: logmcp
+
+archives:
+  - formats:
+      - tar.gz
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+
+nfpms:
+  - package_name: logmcp
+    homepage: https://github.com/kascada/logmcp
+    maintainer: hp <kamran@kleist.de>
+    description: |
+      AI Log Access Server.
+      LogMCP exposes whitelisted log files to AI clients (Claude Code, VS Code)
+      over HTTPS using the Model Context Protocol (MCP).
+    license: MIT
+    section: utils
+    priority: optional
+    formats:
+      - deb
+    bindir: /usr/local/bin
+    contents:
+      - src: packaging/logmcp.service
+        dst: /lib/systemd/system/logmcp.service
+      - dst: /etc/logmcp
+        type: dir
+    scripts:
+      postinstall: packaging/postinst
+      preremove: packaging/prerm
+      postremove: packaging/postrm
+
+checksum:
+  name_template: checksums.txt
+
+release:
+  github:
+    owner: kascada
+    name: logmcp
+  mode: replace

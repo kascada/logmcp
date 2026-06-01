@@ -14,3 +14,14 @@ logmcp_fail2ban_enabled: true
 # logmcp_rate_limit_window_seconds: 60
 
 logmcp_macros_dir: /etc/logmcp/macros
+
+# RAG — opt-in, disabled by default
+# Set logmcp_rag_enabled: true to render the rag: block.
+# Built-in LogMCP docs are always indexed automatically when RAG is enabled.
+# logmcp_rag_enabled: false
+# logmcp_rag_ollama_url: http://127.0.0.1:11434
+# logmcp_rag_embedding_model: nomic-embed-text
+# logmcp_rag_redis_addr: 127.0.0.1:6379
+# logmcp_rag_sources:          # optional — omit for built-in docs only
+#   - name: switchboard
+#     path: /opt/switchboard/docs

@@ -30,7 +30,7 @@ Operational hardening release.
 
 ## [0.1.0] — 2026-05-24
 
-Initial release.
+First Go release — rewrite of the original C++ implementation.
 
 ### Added
 

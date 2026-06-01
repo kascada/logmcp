@@ -24,6 +24,8 @@ import (
 	"github.com/kleist-dev/logmcp/internal/extensions/dispatcher"
 	"github.com/kleist-dev/logmcp/internal/logs"
 	"github.com/kleist-dev/logmcp/internal/macro"
+	"github.com/kleist-dev/logmcp/internal/notify"
+	"github.com/kleist-dev/logmcp/internal/rag"
 	internaltls "github.com/kleist-dev/logmcp/internal/tls"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
@@ -49,6 +51,8 @@ type Server struct {
 	verifyCache      *auth.VerifyCache
 	dispatcher       *dispatcher.Dispatcher
 	registeredTools  map[string]struct{}
+	notifyService    *notify.Service  // nil when telegram.yaml is absent
+	ragQuerier       *rag.Querier     // nil when RAG is not configured
 }
 
 // New creates a new MCP Server with all tools registered.
@@ -67,6 +71,15 @@ func New(cfg *config.Config, logMgr *logs.Manager, docsFS embed.FS) (*Server, er
 		s.verifyCache = auth.NewVerifyCache(makeAuthVerifyFunc(cfg), authVerifyCacheTTL)
 	}
 	s.tokenEntries = buildTokenEntries(cfg.Auth.Tokens)
+
+	s.ragQuerier = buildQuerier(cfg)
+
+	// Load optional Telegram config. Missing file → service stays nil (feature disabled).
+	if telegramCfg, ok, err := notify.LoadTelegramConfig(notify.TelegramConfigPath); err != nil {
+		fmt.Fprintf(os.Stderr, "logmcp: telegram config error: %v\n", err)
+	} else if ok {
+		s.notifyService = notify.NewService(telegramCfg)
+	}
 
 	// Build the MCP server.
 	s.mcpSrv = server.NewMCPServer(
@@ -198,10 +211,8 @@ func (s *Server) trackTool(name string) bool {
 // context does not contain the required scope.
 func withScope(scope string, h func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error)) func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		for _, s := range auth.TokenScopesFromCtx(ctx) {
-			if s == scope {
-				return h(ctx, req)
-			}
+		if slices.Contains(auth.TokenScopesFromCtx(ctx), scope) {
+			return h(ctx, req)
 		}
 		return mcp.NewToolResultError("missing required scope: " + scope), nil
 	}
@@ -331,6 +342,32 @@ func (s *Server) registerTools() {
 
 	// --- extension tools (exposed from configured clitool/rpc extensions) ---
 	s.registerExtensionTools()
+
+	// --- rag_query (only when RAG is configured) ---
+	if s.ragQuerier != nil && s.toolEnabled("rag_query") {
+		s.trackTool("rag_query")
+		rqDesc := loadToolDesc("rag_query")
+		ragQueryTool := mcp.NewTool("rag_query",
+			mcp.WithDescription(rqDesc.Description),
+			mcp.WithString("query",
+				mcp.Required(),
+				mcp.Description(rqDesc.Params["query"]),
+			),
+			mcp.WithNumber("top_k",
+				mcp.Description(rqDesc.Params["top_k"]),
+				mcp.DefaultNumber(5),
+			),
+			mcp.WithString("source",
+				mcp.Description(rqDesc.Params["source"]),
+			),
+		)
+		s.mcpSrv.AddTool(ragQueryTool, withScope("logmcp:read", s.handleRagQuery))
+	}
+
+	// --- notify tools (only when telegram.yaml was loaded successfully) ---
+	if s.notifyService != nil {
+		s.registerNotifyTools()
+	}
 }
 
 // registerMacros loads all macro YAML files from the configured macros directory
@@ -971,6 +1008,15 @@ func (s *Server) Reload(path string) error {
 		}
 	} else {
 		s.verifyCache = nil
+	}
+	// Reload telegram.yaml if notify tools were registered at startup.
+	// If the file was absent at startup the tools are not registered — a restart is required.
+	if s.notifyService != nil {
+		if telegramCfg, ok, err := notify.LoadTelegramConfig(notify.TelegramConfigPath); err != nil {
+			fmt.Fprintf(os.Stderr, "logmcp: telegram config reload error: %v\n", err)
+		} else if ok {
+			s.notifyService = notify.NewService(telegramCfg)
+		}
 	}
 	s.mu.Unlock()
 	fmt.Fprintln(os.Stderr, "logmcp: config reloaded")

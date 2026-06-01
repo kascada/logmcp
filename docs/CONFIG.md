@@ -179,7 +179,7 @@ List of bearer tokens. At least one entry is required.
 |-------|------|----------|-------------|
 | `name` | string | **Yes** | Human-readable label; shown in audit log entries |
 | `token` | string | **Yes** | Bearer token value presented by clients in `Authorization: Bearer` |
-| `scopes` | list | **Yes** | Currently only `"read"` is defined |
+| `scopes` | list | **Yes** | See [SCOPED.md](SCOPED.md) for all defined scopes |
 
 Multiple tokens allow per-client revocation without invalidating all clients:
 
@@ -188,13 +188,13 @@ auth:
   tokens:
     - name: "claude-code"
       token: "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
-      scopes: ["read"]
-    - name: "vscode"
+      scopes: ["logmcp:read"]
+    - name: "admin"
       token: "yyyyyyyy-yyyy-yyyy-yyyy-yyyyyyyyyyyy"
-      scopes: ["read"]
+      scopes: ["logmcp:read", "logmcp:admin"]
 ```
 
-**Legacy migration:** configs with the old `auth.token: "<value>"` single-field format are automatically migrated on load to a token named `"default"` with scope `["read"]`. Run `logmcp setup` to persist the new format.
+**Legacy migration:** configs with the old `auth.token: "<value>"` single-field format are automatically migrated on load to a token named `"default"` with scope `["logmcp:read"]`. Run `logmcp setup` to persist the new format.
 
 Token management without manual YAML editing: `logmcp token list|add|remove|renew`.
 
@@ -427,4 +427,79 @@ extensions:
 | `dir` | string | `""` | Directory scanned for `*.yaml` macro files at startup. Relative paths are resolved against the working directory. An empty string disables macro loading. |
 
 Changes to `extensions.macros` require a full restart — `systemctl reload` does not pick them up.
+
+---
+
+## `rag`
+
+| Type | Default |
+|------|---------|
+| object \| absent | absent (disabled) |
+
+Optional. Enables the RAG (Retrieval-Augmented Generation) feature. When present, LogMCP indexes documents into a Redis vector store using Ollama embeddings and registers the `rag_query` MCP tool. When absent, no RAG tools are registered.
+
+The LogMCP built-in documentation is always indexed automatically as source `logmcp`. Additional sources are configured via `rag.sources`.
+
+```yaml
+rag:
+  ollama_url: http://127.0.0.1:11434
+  embedding_model: nomic-embed-text
+  redis_addr: 127.0.0.1:6379
+  sources:
+    - name: switchboard
+      path: /opt/switchboard/docs
+```
+
+See [RAG.md](RAG.md) for the full reference including document format, indexing CLI, and Ansible deployment.
+
+---
+
+## `telegram.yaml`
+
+Location: `/etc/logmcp/telegram.yaml` (optional, path is hard-coded)
+
+When this file is present at server startup, LogMCP registers two MCP tools — `notify_send` and `notify_bots` — that let authenticated clients send Telegram messages via configured bots.
+
+If the file is absent at startup, the tools are not registered. Placing the file later and running `systemctl reload logmcp` does **not** activate the tools — a full restart is required. Once the tools are registered, `systemctl reload` does pick up changes to `telegram.yaml` (token updates, bot additions, user list changes).
+
+Each bot entry represents a distinct Telegram bot with its own API token. Users are listed per bot with their individual Telegram `chat_id`.
+
+```yaml
+bots:
+  - name: "ops"
+    token: "bot123:ABC..."
+    users:
+      - name: alice
+        chat_id: "111222333"
+      - name: bob
+        chat_id: "444555666"
+  - name: "dev"
+    token: "bot456:DEF..."
+    users:
+      - name: alice
+        chat_id: "111222333"
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `bots[].name` | string | Logical bot name used to address the bot in MCP tool calls. |
+| `bots[].token` | string | Telegram Bot API token (format: `<bot_id>:<secret>`). |
+| `bots[].users[].name` | string | Token name of the user. Must match the `name` field of an `auth.tokens` entry. |
+| `bots[].users[].chat_id` | string | Telegram chat ID of this user (obtained from Telegram). |
+
+**Access rules:**
+
+- A user may only send via bots where their token name appears in `users`.
+- Multiple users can share a bot; one user can have access to multiple bots.
+- When a user has exactly one bot, the `bot` parameter in `notify_send` is optional.
+- `logmcp:admin` tokens see all bots with their user mappings via `notify_bots`, but sending still requires a `users` entry — admin scope grants no extra send access.
+
+**MCP tools registered when `telegram.yaml` is present:**
+
+| Tool | Scope | Description |
+|------|-------|-------------|
+| `notify_send` | `logmcp:read` | Send a Telegram message via a configured bot. |
+| `notify_bots` | `logmcp:read` | List bots available to the caller. |
+
+See [SCOPED.md](SCOPED.md) for scope definitions.
 

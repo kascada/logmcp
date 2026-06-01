@@ -26,6 +26,7 @@ type Config struct {
 	Security   SecurityConfig   `yaml:"security"`
 	Tools      ToolsConfig      `yaml:"tools,omitempty"`
 	Extensions ExtensionsConfig `yaml:"extensions"`
+	RAG        *RAGConfig       `yaml:"rag,omitempty"`
 }
 
 // ServerConfig holds HTTP/TLS server settings.
@@ -150,6 +151,29 @@ type ExtensionsConfig struct {
 	Macros  MacroConfig       `yaml:"macros"`
 }
 
+// RAGConfig holds settings for the optional RAG feature.
+// When nil (absent from config), no RAG tools are registered.
+type RAGConfig struct {
+	// Builtin controls whether the embedded LogMCP docs are indexed as source "logmcp".
+	// Defaults to true when omitted.
+	Builtin        *bool       `yaml:"builtin,omitempty"`
+	OllamaURL      string      `yaml:"ollama_url"`
+	EmbeddingModel string      `yaml:"embedding_model"`
+	RedisAddr      string      `yaml:"redis_addr"`
+	Sources        []RAGSource `yaml:"sources"`
+}
+
+// BuiltinEnabled reports whether the built-in LogMCP docs should be indexed.
+func (r *RAGConfig) BuiltinEnabled() bool {
+	return r.Builtin == nil || *r.Builtin
+}
+
+// RAGSource describes a directory of documents to index.
+type RAGSource struct {
+	Name string `yaml:"name"`
+	Path string `yaml:"path"`
+}
+
 // CltoolExtension configures a single clitool-based MCP extension.
 // See docs/CLITOOL.md for the interface convention.
 type CltoolExtension struct {
@@ -243,6 +267,18 @@ func Load(path string) (*Config, error) {
 		cfg.Logs.Whitelist = DefaultWhitelist
 	}
 
+	if cfg.RAG != nil {
+		if cfg.RAG.OllamaURL == "" {
+			cfg.RAG.OllamaURL = "http://127.0.0.1:11434"
+		}
+		if cfg.RAG.EmbeddingModel == "" {
+			cfg.RAG.EmbeddingModel = "nomic-embed-text"
+		}
+		if cfg.RAG.RedisAddr == "" {
+			cfg.RAG.RedisAddr = "127.0.0.1:6379"
+		}
+	}
+
 	if err := validate(cfg); err != nil {
 		return nil, fmt.Errorf("invalid config: %w", err)
 	}
@@ -278,6 +314,25 @@ func validate(cfg *Config) error {
 	default:
 		return fmt.Errorf("server.tls.mode %q is invalid; expected self-signed, custom, or off", cfg.Server.TLS.Mode)
 	}
+	if cfg.RAG != nil {
+		seen := make(map[string]bool)
+		for i, s := range cfg.RAG.Sources {
+			if s.Name == "" {
+				return fmt.Errorf("rag.sources[%d]: name must not be empty", i)
+			}
+			if s.Path == "" {
+				return fmt.Errorf("rag.sources[%d] (%s): path must not be empty", i, s.Name)
+			}
+			if s.Name == "logmcp" {
+				return fmt.Errorf("rag.sources[%d]: name %q is reserved for built-in docs", i, s.Name)
+			}
+			if seen[s.Name] {
+				return fmt.Errorf("rag.sources: duplicate name %q", s.Name)
+			}
+			seen[s.Name] = true
+		}
+	}
+
 	seenExtNames := make(map[string]bool)
 	for i, ext := range cfg.Extensions.Clitool {
 		if !validExtensionName.MatchString(ext.Name) {

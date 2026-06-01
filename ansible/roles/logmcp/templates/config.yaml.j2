@@ -31,6 +31,20 @@ extensions:
     dir: "{{ logmcp_macros_dir }}"
 
 {% endif %}
+{% if logmcp_rag_enabled | default(false) %}
+rag:
+  ollama_url: "{{ logmcp_rag_ollama_url | default('http://127.0.0.1:11434') }}"
+  embedding_model: "{{ logmcp_rag_embedding_model | default('nomic-embed-text') }}"
+  redis_addr: "{{ logmcp_rag_redis_addr | default('127.0.0.1:6379') }}"
+{% if logmcp_rag_sources is defined and logmcp_rag_sources %}
+  sources:
+{% for source in logmcp_rag_sources %}
+    - name: "{{ source.name }}"
+      path: "{{ source.path }}"
+{% endfor %}
+{% endif %}
+
+{% endif %}
 audit:
   syslog: true
 
