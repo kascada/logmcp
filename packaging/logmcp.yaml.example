@@ -1,0 +1,36 @@
+name: my-logmcp-server
+
+server:
+  host: 127.0.0.1
+  port: 7788
+  tls:
+    # mode: off | self-signed | custom
+    mode: self-signed
+
+# Reverse proxy settings (e.g. Caddy in front of LogMCP)
+proxy:
+  enabled: true
+  trusted_proxy: true
+  domain: logs.example.com
+  path_prefix: /logmcp
+  caddy: true
+
+auth:
+  tokens:
+    - name: alice
+      token: replace-with-a-long-random-token
+      scopes: [read]
+
+logs:
+  whitelist:
+    - /var/log/syslog
+    - /var/log/auth.log
+    - /var/log/nginx/*.log
+    - /var/log/asterisk/*.log
+
+audit:
+  syslog: true
+
+security:
+  fail2ban:
+    enabled: true
