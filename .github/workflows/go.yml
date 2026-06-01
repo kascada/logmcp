@@ -18,7 +18,7 @@ jobs:
           go-version-file: go.mod
 
       - name: Prepare assets
-        run: cp packaging/logmcp.service cmd/assets/logmcp.service
+        run: mkdir -p cmd/assets && cp packaging/logmcp.service cmd/assets/logmcp.service
 
       - name: Build
         run: go build ./...
