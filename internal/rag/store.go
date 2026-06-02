@@ -5,40 +5,46 @@ import (
 	"encoding/json"
 	"fmt"
 	"strconv"
+	"time"
 
 	"github.com/redis/go-redis/v9"
 )
 
-const keyPrefix = "logmcp:rag"
+const ragTTL = 30 * 24 * time.Hour
 
 // Store handles Redis vectorset operations for the RAG index.
 //
-// Key layout:
+// Key layout (prefix = redis.key_prefix from config, default "logmcp"):
 //
-//	logmcp:rag:{source}        — vectorset (element = chunk ID)
-//	logmcp:rag:idx:{source}    — Set of chunk IDs (for cleanup on re-index)
-//	logmcp:rag:meta:{chunkID}  — Hash with chunk metadata and text
+//	{prefix}:rag:{source}        — vectorset (element = chunk ID)
+//	{prefix}:rag:idx:{source}    — Set of chunk IDs (for cleanup on re-index)
+//	{prefix}:rag:meta:{chunkID}  — Hash with chunk metadata and text
 type Store struct {
-	client *redis.Client
+	client    *redis.Client
+	keyPrefix string // e.g. "logmcp:rag"
 }
 
 // NewStore creates a Store backed by the given Redis address.
-func NewStore(addr string) *Store {
+func NewStore(addr, password, keyPrefix string) *Store {
 	return &Store{
-		client: redis.NewClient(&redis.Options{Addr: addr}),
+		client: redis.NewClient(&redis.Options{
+			Addr:     addr,
+			Password: password,
+		}),
+		keyPrefix: keyPrefix + ":rag",
 	}
 }
 
 func (s *Store) vsKey(source string) string {
-	return fmt.Sprintf("%s:%s", keyPrefix, source)
+	return fmt.Sprintf("%s:%s", s.keyPrefix, source)
 }
 
 func (s *Store) idxKey(source string) string {
-	return fmt.Sprintf("%s:idx:%s", keyPrefix, source)
+	return fmt.Sprintf("%s:idx:%s", s.keyPrefix, source)
 }
 
 func (s *Store) metaKey(chunkID string) string {
-	return fmt.Sprintf("%s:meta:%s", keyPrefix, chunkID)
+	return fmt.Sprintf("%s:meta:%s", s.keyPrefix, chunkID)
 }
 
 // Drop removes all vectorset entries and metadata for a source.
@@ -87,7 +93,12 @@ func (s *Store) Add(ctx context.Context, source string, chunks []Chunk, vectors 
 			"text", chunk.Text,
 			"tags", string(tagsJSON),
 		)
+		pipe.Expire(ctx, s.metaKey(chunk.ID), ragTTL)
 	}
+
+	pipe.Expire(ctx, vsKey, ragTTL)
+	pipe.Expire(ctx, idxKey, ragTTL)
+
 	_, err := pipe.Exec(ctx)
 	return err
 }

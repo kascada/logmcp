@@ -18,32 +18,43 @@ import (
 const defaultTimeout = 10 * time.Second
 
 // Dispatcher routes extension tool calls to the correct transport.
-// For RPC extensions a *goredis.Client is cached per Redis address so that
-// the connection pool is reused across calls instead of being torn down
-// and rebuilt on every invocation.
+// A single Redis client is shared across all RPC extensions and created lazily.
 type Dispatcher struct {
-	exts       []config.CltoolExtension
-	rpcClients map[string]*goredis.Client
-	mu         sync.Mutex
+	exts      []config.CltoolExtension
+	redisCfg  config.RedisConfig
+	rpcClient *goredis.Client
+	mu        sync.Mutex
 }
 
 // New creates a Dispatcher from the configured clitool extensions.
-func New(exts []config.CltoolExtension) *Dispatcher {
+func New(exts []config.CltoolExtension, redisCfg config.RedisConfig) *Dispatcher {
 	return &Dispatcher{
-		exts:       exts,
-		rpcClients: make(map[string]*goredis.Client),
+		exts:     exts,
+		redisCfg: redisCfg,
 	}
 }
 
-// Close releases all cached Redis clients. It should be called once the
+// Close releases the cached Redis client. It should be called once the
 // Dispatcher is no longer needed (e.g. during server shutdown).
 func (d *Dispatcher) Close() {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	for _, rdb := range d.rpcClients {
-		rdb.Close() //nolint:errcheck
+	if d.rpcClient != nil {
+		d.rpcClient.Close() //nolint:errcheck
+		d.rpcClient = nil
 	}
-	d.rpcClients = make(map[string]*goredis.Client)
+}
+
+func (d *Dispatcher) getOrCreateRPCClient() *goredis.Client {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.rpcClient == nil {
+		d.rpcClient = goredis.NewClient(&goredis.Options{
+			Addr:     d.redisCfg.Addr,
+			Password: d.redisCfg.Password,
+		})
+	}
+	return d.rpcClient
 }
 
 // Call invokes toolName on the named extension and returns the decoded result.
@@ -64,17 +75,7 @@ func (d *Dispatcher) Call(ctx context.Context, extName, toolName, callerName str
 
 	switch ext.Mode {
 	case "rpc":
-		addr := ext.RedisAddr
-		if addr == "" {
-			addr = "127.0.0.1:6379"
-		}
-		d.mu.Lock()
-		rdb, ok := d.rpcClients[addr]
-		if !ok {
-			rdb = goredis.NewClient(&goredis.Options{Addr: addr})
-			d.rpcClients[addr] = rdb
-		}
-		d.mu.Unlock()
+		rdb := d.getOrCreateRPCClient()
 		var err error
 		result, err = rpc.Call(ctx, rdb, toolName, callerName, callerScopes, params, timeout)
 		if err != nil {

@@ -15,13 +15,17 @@ logmcp_fail2ban_enabled: true
 
 logmcp_macros_dir: /etc/logmcp/macros
 
+# Redis — shared connection for RAG and RPC extensions
+# logmcp_redis_addr: 127.0.0.1:6379
+# logmcp_redis_password: ""        # omit for unauthenticated connections
+# logmcp_redis_key_prefix: logmcp  # namespace prefix for all LogMCP keys
+
 # RAG — opt-in, disabled by default
-# Set logmcp_rag_enabled: true to render the rag: block.
+# Set logmcp_rag_enabled: true to render the redis: and rag: blocks.
 # Built-in LogMCP docs are always indexed automatically when RAG is enabled.
 # logmcp_rag_enabled: false
 # logmcp_rag_ollama_url: http://127.0.0.1:11434
 # logmcp_rag_embedding_model: nomic-embed-text
-# logmcp_rag_redis_addr: 127.0.0.1:6379
 # logmcp_rag_sources:          # optional — omit for built-in docs only
 #   - name: switchboard
 #     path: /opt/switchboard/docs

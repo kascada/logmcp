@@ -67,7 +67,7 @@ func New(cfg *config.Config, logMgr *logs.Manager, docsFS embed.FS) (*Server, er
 		docsFS:           docsFS,
 		burstLimiter:     burst,
 		sustainedLimiter: sustained,
-		dispatcher:       dispatcher.New(cfg.Extensions.Clitool),
+		dispatcher:       dispatcher.New(cfg.Extensions.Clitool, cfg.Redis),
 		registeredTools:  make(map[string]struct{}),
 	}
 	if cfg.Auth.Authenticator != nil {

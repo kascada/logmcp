@@ -80,7 +80,7 @@ func buildQuerier(cfg *config.Config) *rag.Querier {
 	}
 	return &rag.Querier{
 		Ollama:  rag.NewOllamaClient(cfg.RAG.OllamaURL, cfg.RAG.EmbeddingModel),
-		Store:   rag.NewStore(cfg.RAG.RedisAddr),
+		Store:   rag.NewStore(cfg.Redis.Addr, cfg.Redis.Password, cfg.Redis.KeyPrefix),
 		Sources: sources,
 	}
 }

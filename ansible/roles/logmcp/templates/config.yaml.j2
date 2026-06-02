@@ -32,10 +32,18 @@ extensions:
 
 {% endif %}
 {% if logmcp_rag_enabled | default(false) %}
+redis:
+  addr: "{{ logmcp_redis_addr | default('127.0.0.1:6379') }}"
+{% if logmcp_redis_password is defined and logmcp_redis_password %}
+  password: "{{ logmcp_redis_password }}"
+{% endif %}
+{% if logmcp_redis_key_prefix is defined and logmcp_redis_key_prefix %}
+  key_prefix: "{{ logmcp_redis_key_prefix }}"
+{% endif %}
+
 rag:
   ollama_url: "{{ logmcp_rag_ollama_url | default('http://127.0.0.1:11434') }}"
   embedding_model: "{{ logmcp_rag_embedding_model | default('nomic-embed-text') }}"
-  redis_addr: "{{ logmcp_rag_redis_addr | default('127.0.0.1:6379') }}"
 {% if logmcp_rag_sources is defined and logmcp_rag_sources %}
   sources:
 {% for source in logmcp_rag_sources %}

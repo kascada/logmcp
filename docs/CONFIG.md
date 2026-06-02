@@ -58,6 +58,11 @@ audit:
 tools:
   disabled: []
 
+redis:
+  addr: "127.0.0.1:6379"
+  password: "secret"
+  key_prefix: "logmcp"
+
 extensions:
   clitool:
     - name: switchboard
@@ -393,7 +398,6 @@ extensions:
     - name: switchboard_rpc
       command: /usr/local/bin/switchboard
       mode: rpc
-      redis_addr: "127.0.0.1:6379"
       timeout_seconds: 10
 ```
 
@@ -402,8 +406,7 @@ extensions:
 | `name` | string | **required** | Prefix for all tools from this extension (e.g. `switchboard` → `switchboard_status`). Must match `[a-z][a-z0-9_]*`. |
 | `command` | string | **required** | Full path to the clitool executable. Used for `list` at startup and for `call` when `mode: cli`. |
 | `timeout_seconds` | int | `10` | Per-call timeout for both `list` and `call`/RPC invocations. |
-| `mode` | string | `cli` | Transport for tool calls: `cli` spawns a subprocess per call; `rpc` uses a Redis request/response channel to avoid Python process-startup overhead. The `command` is still used at startup to discover tools via `list`. |
-| `redis_addr` | string | `127.0.0.1:6379` | Redis server address. Only used when `mode: rpc`. Expects a local Redis instance with no authentication. |
+| `mode` | string | `cli` | Transport for tool calls: `cli` spawns a subprocess per call; `rpc` uses a Redis request/response channel to avoid Python process-startup overhead. The `command` is still used at startup to discover tools via `list`. Redis connection is taken from the top-level `redis` section. |
 
 If a configured extension cannot be reached at startup (program not found, non-zero exit, or invalid JSON output from `list`), LogMCP refuses to start. This is intentional — an unreachable extension is a configuration error.
 
@@ -431,6 +434,39 @@ Changes to `extensions.macros` require a full restart — `systemctl reload` doe
 
 ---
 
+## `redis`
+
+| Type | Default |
+|------|---------|
+| object | `addr: 127.0.0.1:6379`, `key_prefix: logmcp` |
+
+Shared Redis connection used by RAG (vector store) and RPC extensions. Only required when either feature is enabled.
+
+```yaml
+redis:
+  addr: "127.0.0.1:6379"
+  password: "secret"        # omit when Redis has no password
+  key_prefix: "logmcp"      # all managed keys are prefixed: {key_prefix}:rag:…
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `addr` | string | `127.0.0.1:6379` | Redis server address (`host:port`). |
+| `password` | string | `""` | Redis AUTH password. Omit or leave empty for unauthenticated connections. |
+| `key_prefix` | string | `logmcp` | Namespace prefix for all keys written by LogMCP. Prevents collisions with other applications on the same Redis instance. |
+
+**Key layout** (with default prefix `logmcp`):
+
+| Key pattern | Type | Description |
+|-------------|------|-------------|
+| `logmcp:rag:{source}` | Vectorset | Embedding vectors for a RAG source |
+| `logmcp:rag:idx:{source}` | Set | Chunk IDs for cleanup on re-index |
+| `logmcp:rag:meta:{chunkID}` | Hash | Chunk text and metadata |
+
+All RAG keys carry a **30-day TTL** that is refreshed on every re-index. Keys are automatically removed if a source is dropped from the config and never re-indexed.
+
+---
+
 ## `rag`
 
 | Type | Default |
@@ -441,11 +477,12 @@ Optional. Enables the RAG (Retrieval-Augmented Generation) feature. When present
 
 The LogMCP built-in documentation is always indexed automatically as source `logmcp`. Additional sources are configured via `rag.sources`.
 
+Redis connection is taken from the top-level `redis` section.
+
 ```yaml
 rag:
   ollama_url: http://127.0.0.1:11434
   embedding_model: nomic-embed-text
-  redis_addr: 127.0.0.1:6379
   sources:
     - name: switchboard
       path: /opt/switchboard/docs

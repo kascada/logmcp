@@ -15,6 +15,14 @@ const DefaultPort = 7788
 
 var DefaultWhitelist = []string{"/var/log/*"}
 
+// RedisConfig holds shared Redis connection settings used by all features
+// that require Redis (RAG vector store, RPC extensions).
+type RedisConfig struct {
+	Addr      string `yaml:"addr"`
+	Password  string `yaml:"password,omitempty"`
+	KeyPrefix string `yaml:"key_prefix"`
+}
+
 // Config is the top-level configuration structure for LogMCP.
 type Config struct {
 	Name       string           `yaml:"name"`
@@ -26,6 +34,7 @@ type Config struct {
 	Security   SecurityConfig   `yaml:"security"`
 	Tools      ToolsConfig      `yaml:"tools,omitempty"`
 	Extensions ExtensionsConfig `yaml:"extensions"`
+	Redis      RedisConfig      `yaml:"redis,omitempty"`
 	RAG        *RAGConfig       `yaml:"rag,omitempty"`
 	Databases  []DatabaseConfig `yaml:"databases,omitempty"`
 }
@@ -170,7 +179,6 @@ type RAGConfig struct {
 	Builtin        *bool       `yaml:"builtin,omitempty"`
 	OllamaURL      string      `yaml:"ollama_url"`
 	EmbeddingModel string      `yaml:"embedding_model"`
-	RedisAddr      string      `yaml:"redis_addr"`
 	Sources        []RAGSource `yaml:"sources"`
 }
 
@@ -198,8 +206,6 @@ type CltoolExtension struct {
 	// Mode selects the call transport: "cli" (default) spawns a subprocess per call;
 	// "rpc" uses a Redis-based request/response channel to avoid process-startup overhead.
 	Mode string `yaml:"mode,omitempty"`
-	// RedisAddr is the Redis server address used when Mode is "rpc" (default: "127.0.0.1:6379").
-	RedisAddr string `yaml:"redis_addr,omitempty"`
 }
 
 // Default returns a Config populated with sensible defaults.
@@ -236,6 +242,10 @@ func Default() *Config {
 			},
 		},
 		Extensions: ExtensionsConfig{},
+		Redis: RedisConfig{
+			Addr:      "127.0.0.1:6379",
+			KeyPrefix: "logmcp",
+		},
 	}
 }
 
@@ -284,9 +294,6 @@ func Load(path string) (*Config, error) {
 		}
 		if cfg.RAG.EmbeddingModel == "" {
 			cfg.RAG.EmbeddingModel = "nomic-embed-text"
-		}
-		if cfg.RAG.RedisAddr == "" {
-			cfg.RAG.RedisAddr = "127.0.0.1:6379"
 		}
 	}
 

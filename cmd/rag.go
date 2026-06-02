@@ -67,7 +67,7 @@ func newRagQueryCmd() *cobra.Command {
 			}
 			querier := &rag.Querier{
 				Ollama:  rag.NewOllamaClient(cfg.RAG.OllamaURL, cfg.RAG.EmbeddingModel),
-				Store:   rag.NewStore(cfg.RAG.RedisAddr),
+				Store:   rag.NewStore(cfg.Redis.Addr, cfg.Redis.Password, cfg.Redis.KeyPrefix),
 				Sources: sources,
 			}
 			results, err := querier.Search(context.Background(), args[0], source, topK)
@@ -97,11 +97,11 @@ func ragIndex(docsFS embed.FS, onlySource string) error {
 	}
 
 	ollama := rag.NewOllamaClient(cfg.RAG.OllamaURL, cfg.RAG.EmbeddingModel)
-	store := rag.NewStore(cfg.RAG.RedisAddr)
+	store := rag.NewStore(cfg.Redis.Addr, cfg.Redis.Password, cfg.Redis.KeyPrefix)
 	ctx := context.Background()
 
 	fmt.Printf("Ollama:  %s  (model: %s)\n", cfg.RAG.OllamaURL, cfg.RAG.EmbeddingModel)
-	fmt.Printf("Redis:   %s\n\n", cfg.RAG.RedisAddr)
+	fmt.Printf("Redis:   %s  (prefix: %s)\n\n", cfg.Redis.Addr, cfg.Redis.KeyPrefix)
 
 	if err := ollama.Ping(ctx); err != nil {
 		return fmt.Errorf("ollama: %w", err)
