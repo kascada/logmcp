@@ -20,6 +20,7 @@ import (
 	"github.com/kleist-dev/logmcp/internal/auth"
 	"github.com/kleist-dev/logmcp/internal/check"
 	"github.com/kleist-dev/logmcp/internal/config"
+	"github.com/kleist-dev/logmcp/internal/database"
 	"github.com/kleist-dev/logmcp/internal/extensions/clitool"
 	"github.com/kleist-dev/logmcp/internal/extensions/dispatcher"
 	"github.com/kleist-dev/logmcp/internal/logs"
@@ -51,8 +52,10 @@ type Server struct {
 	verifyCache      *auth.VerifyCache
 	dispatcher       *dispatcher.Dispatcher
 	registeredTools  map[string]struct{}
-	notifyService    *notify.Service  // nil when telegram.yaml is absent
-	ragQuerier       *rag.Querier     // nil when RAG is not configured
+	notifyService    *notify.Service      // nil when telegram.yaml is absent
+	ragQuerier       *rag.Querier         // nil when RAG is not configured
+	dbPool           *database.Pool       // nil when no databases are configured
+	schemaStore      *database.SchemaStore // nil when no databases are configured
 }
 
 // New creates a new MCP Server with all tools registered.
@@ -73,6 +76,7 @@ func New(cfg *config.Config, logMgr *logs.Manager, docsFS embed.FS) (*Server, er
 	s.tokenEntries = buildTokenEntries(cfg.Auth.Tokens)
 
 	s.ragQuerier = buildQuerier(cfg)
+	s.dbPool, s.schemaStore = buildDBComponents(cfg)
 
 	// Load optional Telegram config. Missing file → service stays nil (feature disabled).
 	if telegramCfg, ok, err := notify.LoadTelegramConfig(notify.TelegramConfigPath); err != nil {
@@ -102,8 +106,13 @@ func New(cfg *config.Config, logMgr *logs.Manager, docsFS embed.FS) (*Server, er
 	return s, nil
 }
 
-// registerResources adds all embedded docs/*.md files as MCP resources.
+// registerResources adds all embedded docs/*.md files as MCP resources,
+// and the database schema resource template when databases are configured.
 func (s *Server) registerResources() {
+	if s.dbPool != nil {
+		s.registerDBResources()
+	}
+
 	fs.WalkDir(s.docsFS, "docs", func(path string, d fs.DirEntry, err error) error { //nolint:errcheck
 		if err != nil || d.IsDir() || !strings.HasSuffix(path, ".md") {
 			return nil
@@ -367,6 +376,11 @@ func (s *Server) registerTools() {
 	// --- notify tools (only when telegram.yaml was loaded successfully) ---
 	if s.notifyService != nil {
 		s.registerNotifyTools()
+	}
+
+	// --- database tools (only when databases are configured) ---
+	if s.dbPool != nil {
+		s.registerDBTools()
 	}
 }
 
@@ -638,10 +652,12 @@ func (s *Server) handleLogInfo(ctx context.Context, req mcp.CallToolRequest) (*m
 func (s *Server) handleCheckEnvironment(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	s.mu.RLock()
 	cfg := s.cfg
+	pool := s.dbPool
 	s.mu.RUnlock()
 	result := check.Run(cfg, check.Options{
 		ConfigPath:  config.DefaultConfigPath,
 		IncludePort: true,
+		DBPool:      pool,
 	})
 
 	return marshalResult(result)
@@ -845,6 +861,12 @@ func (s *Server) Start() error {
 		defer cancel()
 		_ = httpSrv.Shutdown(shutCtx)
 		s.dispatcher.Close()
+		s.mu.RLock()
+		pool := s.dbPool
+		s.mu.RUnlock()
+		if pool != nil {
+			pool.Close()
+		}
 	}()
 
 	// Periodically prune expired entries from rate limiters to prevent unbounded growth

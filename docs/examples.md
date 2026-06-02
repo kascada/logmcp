@@ -230,6 +230,62 @@ Macros are worth writing when a pattern repeats across sessions: the same combin
 
 ---
 
+## 4 — MySQL: Database Access
+
+### The situation
+
+A web application stores its data in MySQL. When diagnosing issues — slow queries, missing records, unexpected state — the AI needs to inspect the schema and query the database directly. Rather than copy-pasting table definitions into the conversation, LogMCP exposes the schema as an MCP resource and executes queries on demand.
+
+### Setup
+
+```yaml
+# /etc/logmcp/config.yaml
+
+databases:
+  - name: app
+    dsn: "readonly_user:$APP_DB_PASSWORD@tcp(127.0.0.1:3306)/appdb"
+```
+
+Two environment variables are expanded at load time. The read-only database user limits blast radius — `db_query` can execute any SQL, but write operations will be rejected by the database itself.
+
+After `sudo systemctl restart logmcp`, three tools and one resource template appear:
+
+```
+db_list    — list non-system databases on a connection
+db_schema  — schema for a connection (databases → tables → columns)
+db_query   — execute SQL and return columns + rows as JSON
+```
+
+And the resource `logmcp://db/app/schema` is available for AI clients that fetch resources before starting a session.
+
+### How schema and queries work together
+
+The AI can pull the schema once at the start of a session, then query freely without re-fetching it:
+
+> **Me:** Users are reporting that their session expires immediately after login. Can you check the sessions table?
+>
+> **AI:** Let me look at the schema first.
+> *(reads `logmcp://db/app/schema` as a resource — one round-trip, full schema in context)*
+>
+> **AI:** The sessions table has `user_id`, `token`, `created_at`, and `expires_at`. Let me check recent entries.
+> *(calls `db_query` with `SELECT user_id, created_at, expires_at FROM sessions ORDER BY created_at DESC LIMIT 10`)*
+>
+> **AI:** I see `expires_at` is being set to the same value as `created_at` for all sessions created in the last hour. The session lifetime is effectively zero. This looks like a bug introduced in the last deployment — the `expires_at` calculation is probably using the wrong timezone or missing the TTL offset.
+
+One schema fetch, one query, root cause identified. The AI did not need to guess column names or run exploratory queries to discover the structure.
+
+### Cache behaviour
+
+Schema results are cached in process memory for 5 minutes. If the schema changes (new column added, table renamed), call `db_schema` with `refresh:true` to force a reload:
+
+```
+db_schema name=app refresh=true
+```
+
+The `logmcp://db/app/schema` resource serves from the same cache — no extra round-trip to the database.
+
+---
+
 ## Putting it together
 
 These three extensions compose cleanly:

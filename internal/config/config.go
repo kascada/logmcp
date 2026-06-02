@@ -27,6 +27,17 @@ type Config struct {
 	Tools      ToolsConfig      `yaml:"tools,omitempty"`
 	Extensions ExtensionsConfig `yaml:"extensions"`
 	RAG        *RAGConfig       `yaml:"rag,omitempty"`
+	Databases  []DatabaseConfig `yaml:"databases,omitempty"`
+}
+
+// DatabaseConfig describes a named MySQL database connection.
+type DatabaseConfig struct {
+	// Name is the logical identifier used to reference this connection in MCP tools.
+	// Must be non-empty and unique within the databases list.
+	Name string `yaml:"name"`
+	// DSN is the MySQL Data Source Name, e.g. "user:pass@tcp(host:3306)/dbname".
+	// See https://github.com/go-sql-driver/mysql#dsn-data-source-name for format.
+	DSN string `yaml:"dsn"`
 }
 
 // ServerConfig holds HTTP/TLS server settings.
@@ -331,6 +342,20 @@ func validate(cfg *Config) error {
 			}
 			seen[s.Name] = true
 		}
+	}
+
+	seenDBNames := make(map[string]bool)
+	for i, db := range cfg.Databases {
+		if db.Name == "" {
+			return fmt.Errorf("databases[%d]: name must not be empty", i)
+		}
+		if db.DSN == "" {
+			return fmt.Errorf("databases[%d] (%s): dsn must not be empty", i, db.Name)
+		}
+		if seenDBNames[db.Name] {
+			return fmt.Errorf("databases: duplicate name %q", db.Name)
+		}
+		seenDBNames[db.Name] = true
 	}
 
 	seenExtNames := make(map[string]bool)

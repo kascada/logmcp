@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/kleist-dev/logmcp/internal/config"
+	"github.com/kleist-dev/logmcp/internal/database"
 	"github.com/kleist-dev/logmcp/internal/extensions/clitool"
 )
 
@@ -37,6 +38,9 @@ type Options struct {
 	// IncludePort checks whether the configured port is free.
 	// Set to false when called from a running server (port is in use by design).
 	IncludePort bool
+	// DBPool, when non-nil, is used to check configured database connections.
+	// Pass nil to skip database checks (e.g. from the CLI before the server starts).
+	DBPool *database.Pool
 }
 
 // Run performs all environment checks and returns a structured result.
@@ -144,6 +148,19 @@ func Run(cfg *config.Config, opts Options) Result {
 			add(fmt.Sprintf("extension %q accessible", ext.Name), false, err.Error())
 		} else {
 			add(fmt.Sprintf("extension %q accessible", ext.Name), true, fmt.Sprintf("%d tool(s)", len(tools)))
+		}
+	}
+
+	// Database connections (if configured and pool is available).
+	if opts.DBPool != nil {
+		for _, db := range cfg.Databases {
+			result := database.Check(opts.DBPool, db.Name)
+			checkName := fmt.Sprintf("database %q reachable", db.Name)
+			if result.OK {
+				add(checkName, true, result.Version)
+			} else {
+				add(checkName, false, result.Detail)
+			}
 		}
 	}
 
