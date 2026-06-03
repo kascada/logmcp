@@ -1,10 +1,11 @@
 module github.com/kleist-dev/logmcp
 
-go 1.25.10
+go 1.26.4
 
 require (
 	github.com/bmatcuk/doublestar/v4 v4.10.0
 	github.com/chzyer/readline v1.5.1
+	github.com/go-sql-driver/mysql v1.10.0
 	github.com/google/uuid v1.6.0
 	github.com/mark3labs/mcp-go v0.54.0
 	github.com/redis/go-redis/v9 v9.19.0
@@ -16,7 +17,6 @@ require (
 require (
 	filippo.io/edwards25519 v1.2.0 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
-	github.com/go-sql-driver/mysql v1.10.0 // indirect
 	github.com/google/jsonschema-go v0.4.2 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
 	github.com/santhosh-tekuri/jsonschema/v6 v6.0.2 // indirect
