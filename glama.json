@@ -1,7 +1,4 @@
 {
-  "maintainers": [
-    {
-      "github": "kascada"
-    }
-  ]
+  "$schema": "https://glama.ai/mcp/schemas/server.json",
+  "maintainers": ["kascada"]
 }

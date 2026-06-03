@@ -83,22 +83,82 @@ func extractH1(content string) string {
 	return ""
 }
 
+// maxChunkRunes is the maximum size of a single chunk sent to the embedding model.
+// nomic-embed-text has a default context of ~2048 tokens; ~4 chars/token → ~8000 chars.
+// We stay well below that to leave room for non-ASCII characters.
+const maxChunkRunes = 6000
+
 // splitSections splits content by ## headings, keeping each heading with its body.
+// Sections that exceed maxChunkRunes are further split by paragraph boundaries.
 func splitSections(content string) []string {
 	lines := strings.Split(content, "\n")
 	var sections []string
 	var current []string
 
+	flush := func() {
+		if len(current) == 0 {
+			return
+		}
+		text := strings.Join(current, "\n")
+		sections = append(sections, splitLargeSection(text)...)
+		current = nil
+	}
+
 	for _, line := range lines {
 		if strings.HasPrefix(line, "## ") && len(current) > 0 {
-			sections = append(sections, strings.Join(current, "\n"))
+			flush()
 			current = []string{line}
 		} else {
 			current = append(current, line)
 		}
 	}
-	if len(current) > 0 {
-		sections = append(sections, strings.Join(current, "\n"))
-	}
+	flush()
 	return sections
+}
+
+// splitLargeSection splits a section by paragraph boundaries when it exceeds
+// maxChunkRunes, falling back to fixed-size rune splits if paragraphs are
+// themselves too large.
+func splitLargeSection(text string) []string {
+	if len([]rune(text)) <= maxChunkRunes {
+		return []string{text}
+	}
+	paragraphs := strings.Split(text, "\n\n")
+	var result []string
+	var acc strings.Builder
+	for _, para := range paragraphs {
+		para = strings.TrimSpace(para)
+		if para == "" {
+			continue
+		}
+		if acc.Len() > 0 && len([]rune(acc.String()))+len([]rune(para))+2 > maxChunkRunes {
+			result = append(result, acc.String())
+			acc.Reset()
+		}
+		if acc.Len() > 0 {
+			acc.WriteString("\n\n")
+		}
+		acc.WriteString(para)
+	}
+	if acc.Len() > 0 {
+		result = append(result, acc.String())
+	}
+	if len(result) == 0 {
+		return splitByRunes(text, maxChunkRunes)
+	}
+	return result
+}
+
+// splitByRunes splits text into chunks of at most size runes.
+func splitByRunes(text string, size int) []string {
+	runes := []rune(text)
+	var result []string
+	for i := 0; i < len(runes); i += size {
+		end := i + size
+		if end > len(runes) {
+			end = len(runes)
+		}
+		result = append(result, string(runes[i:end]))
+	}
+	return result
 }
