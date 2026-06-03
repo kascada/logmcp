@@ -1,23 +1,8 @@
-name: logmcp-docker
-
-server:
-  host: 0.0.0.0
-  port: 7788
-  tls:
-    mode: off
-
-proxy:
-  enabled: false
-
 auth:
-  tokens:
-    - name: test
-      token: logmcp-test-token
-      scopes: [read]
+  stdio:
+    scopes:
+      - logmcp:read
 
 logs:
   whitelist:
     - /var/log/*
-
-audit:
-  syslog: false

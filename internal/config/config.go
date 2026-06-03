@@ -87,10 +87,17 @@ type AuthenticatorConfig struct {
 	TimeoutSeconds int    `yaml:"timeout_seconds,omitempty"`
 }
 
+// StdioConfig configures the stdio (local MCP) transport.
+type StdioConfig struct {
+	// Scopes granted to the local stdio client. Defaults to ["logmcp:read"] when empty.
+	Scopes []string `yaml:"scopes,omitempty"`
+}
+
 // AuthConfig holds bearer-token authentication settings.
 type AuthConfig struct {
 	Tokens        []TokenConfig        `yaml:"tokens,omitempty"`
 	Authenticator *AuthenticatorConfig `yaml:"authenticator,omitempty"`
+	Stdio         StdioConfig          `yaml:"stdio,omitempty"`
 }
 
 // Default returns the first token, or nil if none are configured.
@@ -311,7 +318,8 @@ func validate(cfg *Config) error {
 			return fmt.Errorf("auth.authenticator.command must not be empty")
 		}
 	} else {
-		if len(cfg.Auth.Tokens) == 0 {
+		// Tokens are required unless the config is stdio-only (no HTTP server tokens needed).
+		if len(cfg.Auth.Tokens) == 0 && len(cfg.Auth.Stdio.Scopes) == 0 {
 			return fmt.Errorf("auth.tokens must contain at least one token, or auth.authenticator must be configured")
 		}
 		for i, t := range cfg.Auth.Tokens {

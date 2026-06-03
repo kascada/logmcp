@@ -226,6 +226,28 @@ auth:
 
 Either `auth.tokens` or `auth.authenticator` must be configured — having neither is a validation error.
 
+### `auth.stdio`
+
+| Type | Default |
+|------|---------|
+| object | absent (uses default scopes) |
+
+Controls access for the local stdio transport (`logmcp stdio`). When present, the `scopes` list overrides the default. When absent or when `scopes` is empty, the default scope `["logmcp:read"]` is used.
+
+```yaml
+auth:
+  stdio:
+    scopes: ["logmcp:read"]
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `scopes` | list | `["logmcp:read"]` | Scopes granted to the local stdio client. See [SCOPED.md](SCOPED.md) for all defined scopes. |
+
+When `auth.stdio.scopes` is the only auth configuration (no `auth.tokens` and no `auth.authenticator`), the config is valid for stdio-only use. In this case, `logmcp serve` (HTTP mode) will have no tokens configured and will reject all HTTP clients.
+
+See [STDIO.md](STDIO.md) for the full stdio setup guide including Claude Desktop and Claude Code configuration.
+
 ---
 
 ## `logs`

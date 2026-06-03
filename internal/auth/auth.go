@@ -50,6 +50,16 @@ func TokenScopesFromCtx(ctx context.Context) []string {
 	return nil
 }
 
+// InjectStdioIdentity stores a synthetic caller identity into the context for
+// stdio transport, where there is no HTTP middleware to inject auth values.
+// name is the display name shown in audit entries; scopes controls tool access.
+func InjectStdioIdentity(ctx context.Context, name string, scopes []string) context.Context {
+	ctx = context.WithValue(ctx, tokenNameKey{}, name)
+	ctx = context.WithValue(ctx, tokenValueKey{}, "")
+	ctx = context.WithValue(ctx, tokenScopesKey{}, scopes)
+	return ctx
+}
+
 // errorResponse is the JSON body returned on authentication failure.
 type errorResponse struct {
 	Error string `json:"error"`

@@ -780,12 +780,21 @@ func (s *Server) handleCheckConfig(ctx context.Context, req mcp.CallToolRequest)
 }
 
 
+// MCPServer returns the underlying MCP server instance.
+// This is used by the stdio transport to start a local stdio session.
+func (s *Server) MCPServer() *server.MCPServer {
+	return s.mcpSrv
+}
+
 // handleServerStatus implements the server_status tool.
 func (s *Server) handleServerStatus(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	s.mu.RLock()
 	cfg := s.cfg
 	toolCount := len(s.registeredTools)
 	s.mu.RUnlock()
+
+	callerName := auth.TokenNameFromCtx(ctx)
+	callerScopes := auth.TokenScopesFromCtx(ctx)
 
 	result := check.Result{OK: true}
 	add := func(name string, ok bool, detail string) {
@@ -806,7 +815,19 @@ func (s *Server) handleServerStatus(ctx context.Context, req mcp.CallToolRequest
 		}
 	}
 
-	return marshalResult(result)
+	type callerInfo struct {
+		Name   string   `json:"name"`
+		Scopes []string `json:"scopes"`
+	}
+	statusResult := struct {
+		check.Result
+		Caller callerInfo `json:"caller"`
+	}{
+		Result: result,
+		Caller: callerInfo{Name: callerName, Scopes: callerScopes},
+	}
+
+	return marshalResult(statusResult)
 }
 
 // Start launches the MCP HTTP server, blocking until it exits.

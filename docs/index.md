@@ -12,6 +12,7 @@ This is the entry point for all LogMCP documentation available as MCP resources.
 | `logmcp://docs/ansible` | Ansible role reference: automated deployment via the official Debian package |
 | `logmcp://docs/macro` | Macro reference: define custom MCP tools in YAML |
 | `logmcp://docs/examples` | Extension examples: clitool + auth, RPC transport, macros |
+| `logmcp://docs/stdio` | stdio mode: local MCP server without HTTP, tokens, or Caddy |
 
 ## How to access
 
@@ -24,6 +25,14 @@ Fetch any resource by its URI via the MCP protocol. Example: to read the configu
 - **Diagnosing auth or audit issues?** See `logmcp://docs/logging`.
 - **Checking the current server config at runtime?** Use the `check_config` MCP tool.
 - **Defining custom MCP tools from YAML?** See `logmcp://docs/macro`.
+- **Local log analysis without a server?** Use `logmcp stdio` — see `logmcp://docs/stdio`.
+
+## Use cases
+
+| Use case | How |
+|----------|-----|
+| Remote log access (server → AI client) | `logmcp serve` — HTTP + Bearer token, optionally behind Caddy |
+| Local log analysis (same machine) | `logmcp stdio` — stdio transport, no HTTP, no token required |
 
 ## Diagnostic tools
 

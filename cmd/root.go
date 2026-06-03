@@ -24,6 +24,7 @@ over HTTPS + Bearer Token using the Model Context Protocol (MCP).`,
 func Execute(docsFS embed.FS) error {
 	rootCmd.AddCommand(newServeCmd(docsFS))
 	rootCmd.AddCommand(newRagCmd(docsFS))
+	rootCmd.AddCommand(newStdioCmd(docsFS))
 	return rootCmd.Execute()
 }
 

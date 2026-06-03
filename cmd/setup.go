@@ -71,6 +71,17 @@ func runSetup(cmd *cobra.Command, args []string) error {
 
 	fmt.Println()
 
+	// --- Modus: HTTP-Server oder stdio ---
+	fmt.Println("Modus:")
+	fmt.Println("  1) HTTP-Server  (empfohlen — Claude Code / Claude Desktop via HTTPS + Token)")
+	fmt.Println("  2) stdio        (lokal, kein Netzwerk — nicht empfohlen, nur für Einzel-Rechner)")
+	mode := prompt(rl, "Modus [1/2]", "1")
+	if mode == "2" {
+		return runSetupStdio(cfg)
+	}
+
+	fmt.Println()
+
 	// --- Step 0: System user ---
 	logmcpExists, err := setupSystemUser(rl)
 	if err != nil {
@@ -162,6 +173,86 @@ func runSetup(cmd *cobra.Command, args []string) error {
 	fmt.Println("=== Setup complete ===")
 	fmt.Println("Start the server with: sudo logmcp serve")
 	fmt.Println("Or configure client snippets with: logmcp client-config claude-code")
+
+	return nil
+}
+
+// runSetupStdio handles the stdio-only branch of the setup wizard.
+// It writes a minimal config (no tokens, no TLS) and prints the claude mcp add command.
+func runSetupStdio(cfg *config.Config) error {
+	fmt.Println()
+	fmt.Println("=== stdio-Modus ===")
+	fmt.Println("Es wird eine minimale Config ohne Token und ohne TLS angelegt.")
+	fmt.Println("LogMCP läuft nur lokal — kein HTTP-Server wird gestartet.")
+	fmt.Println()
+
+	name := cfg.Name
+	if name == "" {
+		name = "logmcp"
+	}
+
+	whitelist := cfg.Logs.Whitelist
+	if len(whitelist) == 0 {
+		whitelist = config.DefaultWhitelist
+	}
+	whitelistYAML := ""
+	for _, p := range whitelist {
+		whitelistYAML += fmt.Sprintf("    - %s\n", p)
+	}
+
+	cfgYAML := fmt.Sprintf(`name: %s
+
+auth:
+  stdio:
+    scopes:
+      - logmcp:read
+
+logs:
+  whitelist:
+%s  # Weitere Pfade freischalten (# entfernen):
+  # - /var/log/nginx/**
+  # - /var/log/asterisk/*
+  # - /tmp/myapp/*.log
+  blacklist: []
+  journald: false
+
+audit:
+  syslog: true
+
+# redis:
+#   addr: 127.0.0.1:6379
+#   key_prefix: logmcp
+`, name, whitelistYAML)
+
+	fmt.Println()
+	if err := os.MkdirAll("/etc/logmcp", 0o755); err != nil {
+		return fmt.Errorf("creating /etc/logmcp: %w", err)
+	}
+	if err := os.Chmod("/etc/logmcp", 0o755); err != nil {
+		return fmt.Errorf("setting permissions on /etc/logmcp: %w", err)
+	}
+	if err := os.WriteFile(config.DefaultConfigPath, []byte(cfgYAML), 0o644); err != nil {
+		return fmt.Errorf("writing config to %s: %w", config.DefaultConfigPath, err)
+	}
+	fmt.Printf("Config written to %s\n", config.DefaultConfigPath)
+
+	binaryPath, _ := os.Executable()
+	if binaryPath == "" {
+		binaryPath = "/usr/local/bin/logmcp"
+	}
+
+	fmt.Println()
+	fmt.Println("=== Setup complete ===")
+	fmt.Println()
+	fmt.Println("Claude Code — MCP-Server registrieren:")
+	fmt.Println()
+	fmt.Printf("  claude mcp add %s --type stdio -- %s stdio\n", name, binaryPath)
+	fmt.Println()
+	fmt.Println("Claude Desktop — claude_desktop_config.json:")
+	fmt.Println()
+	fmt.Printf("  { \"mcpServers\": { \"%s\": { \"command\": \"%s\", \"args\": [\"stdio\"] } } }\n", name, binaryPath)
+	fmt.Println()
+	fmt.Println("Scopes anpassen: auth.stdio.scopes in", config.DefaultConfigPath)
 
 	return nil
 }
