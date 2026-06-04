@@ -2,6 +2,7 @@
 # LogMCP
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![logmcp MCP server](https://glama.ai/mcp/servers/kascada/logmcp/badges/score.svg)](https://glama.ai/mcp/servers/kascada/logmcp)
 
 MCP server — read-only log access for AI assistants. Debug your Linux server with AI, without giving the AI shell access.
 
